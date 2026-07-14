@@ -30,3 +30,10 @@ a:hover {
 a:active {
     color: rgb(255, 111, 0);
 }
+
+blockquote {
+    margin: 1rem 0;
+    padding: 0.25rem 1rem;
+    border-left: 4px solid #999;
+    color: #555;
+}
