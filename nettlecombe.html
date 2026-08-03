@@ -42,6 +42,28 @@
   .veil .big { font-size:19px; }
   .veil .small { color:var(--dim); font-size:13px; margin-top:8px; }
   #load .bar { width:220px; height:2px; background:#2c2e33; margin:14px auto 0; }
+  /* --- touch --- */
+  html,body,#app { touch-action:none; -webkit-user-select:none; }
+  #touch { position:fixed; inset:0; display:none; pointer-events:none; z-index:5; }
+  body.touch #touch { display:block; }
+  body.touch #keys { display:none; }
+  #stick { position:absolute; width:132px; height:132px; border-radius:50%;
+           border:1px solid rgba(232,228,220,.28); background:rgba(232,228,220,.05);
+           opacity:0; transition:opacity .15s; }
+  #stick i { position:absolute; left:50%; top:50%; width:52px; height:52px;
+             margin:-26px 0 0 -26px; border-radius:50%; background:rgba(232,228,220,.30); }
+  #vert { position:absolute; right:20px; bottom:26px; display:flex; flex-direction:column;
+          gap:12px; pointer-events:auto; }
+  #vert button { width:64px; height:64px; border-radius:50%; font:20px/1 Georgia,serif;
+                 color:var(--ink); background:rgba(232,228,220,.09);
+                 border:1px solid rgba(232,228,220,.28); }
+  #vert button:active { background:rgba(201,180,122,.35); }
+  #tkeys { position:absolute; left:16px; bottom:26px; display:flex; gap:10px;
+           pointer-events:auto; }
+  #tkeys button { padding:9px 14px; border-radius:8px; font:13px Georgia,serif;
+                  color:var(--ink); background:rgba(232,228,220,.09);
+                  border:1px solid rgba(232,228,220,.28); }
+  #tkeys button:active { background:rgba(201,180,122,.35); }
   #load .bar i { display:block; height:100%; width:0; background:var(--gold); }
 </style>
 </head>
@@ -73,6 +95,17 @@
   <div class="mode" id="mode">click to capture the mouse</div>
 </div>
 <div id="stat"></div>
+<div id="touch">
+  <div id="stick"><i></i></div>
+  <div id="vert">
+    <button id="bup" aria-label="up">&#9650;</button>
+    <button id="bdn" aria-label="down">&#9660;</button>
+  </div>
+  <div id="tkeys">
+    <button id="bwire">wire</button><button id="bflat">flat</button><button id="bhome">start</button>
+  </div>
+</div>
+
 
 <div class="veil" id="load"><div>
   <p class="big" id="msg">loading model</p>
@@ -172,6 +205,78 @@ function setMode(m) {
   xhair.style.display     = m === 'idle' ? 'none' : 'block';
 }
 
+
+/* ---------- touch ---------- */
+const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+let tFwd = 0, tStrafe = 0, tUp = 0;          // analog axes, -1..1
+const stickEl = document.getElementById('stick');
+const STICK_R = 52;
+
+if (isTouch) {
+  document.body.classList.add('touch');
+  // pointer lock does not exist here; go straight to the flying state so the
+  // veil cannot reappear when a tap produces no lock and no error event
+  dragMode = true;
+  setMode('drag');
+  modeEl.textContent = 'left thumb to move, right side to look';
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));   // mobile GPUs
+}
+
+let stickId = null, stickOx = 0, stickOy = 0;
+let lookId = null, lookX = 0, lookY = 0;
+
+function onDown(e) {
+  if (!isTouch) return;
+  if (e.target.closest('#vert, #tkeys, a')) return;
+  if (e.clientX < innerWidth / 2 && stickId === null) {
+    stickId = e.pointerId; stickOx = e.clientX; stickOy = e.clientY;
+    stickEl.style.left = (e.clientX - 66) + 'px';
+    stickEl.style.top  = (e.clientY - 66) + 'px';
+    stickEl.style.opacity = 1;
+  } else if (lookId === null) {
+    lookId = e.pointerId; lookX = e.clientX; lookY = e.clientY;
+  }
+}
+function onMove(e) {
+  if (!isTouch) return;
+  if (e.pointerId === stickId) {
+    let dx = e.clientX - stickOx, dy = e.clientY - stickOy;
+    const d = Math.hypot(dx, dy);
+    if (d > STICK_R) { dx *= STICK_R / d; dy *= STICK_R / d; }
+    stickEl.firstElementChild.style.transform = `translate(${dx}px,${dy}px)`;
+    tStrafe = dx / STICK_R;
+    tFwd    = -dy / STICK_R;
+  } else if (e.pointerId === lookId) {
+    yaw   -= (e.clientX - lookX) * 0.0045;
+    pitch -= (e.clientY - lookY) * 0.0045;
+    pitch  = Math.max(-1.553, Math.min(1.553, pitch));
+    lookX = e.clientX; lookY = e.clientY;
+  }
+}
+function onUp(e) {
+  if (e.pointerId === stickId) {
+    stickId = null; tFwd = tStrafe = 0;
+    stickEl.style.opacity = 0;
+    stickEl.firstElementChild.style.transform = '';
+  }
+  if (e.pointerId === lookId) lookId = null;
+}
+addEventListener('pointerdown', onDown, {passive:true});
+addEventListener('pointermove', onMove, {passive:true});
+addEventListener('pointerup', onUp);
+addEventListener('pointercancel', onUp);
+
+const hold = (id, v) => {
+  const b = document.getElementById(id);
+  b.addEventListener('pointerdown', e => { e.preventDefault(); tUp = v; });
+  ['pointerup','pointerleave','pointercancel'].forEach(k =>
+    b.addEventListener(k, () => { tUp = 0; }));
+};
+hold('bup', 1); hold('bdn', -1);
+document.getElementById('bwire').onclick = () => dispatchEvent(new KeyboardEvent('keydown',{key:'f'}));
+document.getElementById('bflat').onclick = () => dispatchEvent(new KeyboardEvent('keydown',{key:'g'}));
+document.getElementById('bhome').onclick = () => home();
+
 document.addEventListener('click', e => {
   if (locked || dragMode || e.target.closest('a')) return;
   try {
@@ -253,13 +358,11 @@ function tick(now) {
   camera.getWorldDirection(fwd);              // forward follows the full look direction
   right.crossVectors(fwd, UP).normalize();
 
-  wish.set(0, 0, 0);
-  if (keys.has('KeyW')) wish.add(fwd);
-  if (keys.has('KeyS')) wish.sub(fwd);
-  if (keys.has('KeyD')) wish.add(right);
-  if (keys.has('KeyA')) wish.sub(right);
-  if (keys.has('Space')) wish.add(UP);
-  if (keys.has('ShiftLeft') || keys.has('ShiftRight')) wish.sub(UP);
+  const ax = (keys.has('KeyW')?1:0) - (keys.has('KeyS')?1:0) + tFwd;
+  const ay = (keys.has('KeyD')?1:0) - (keys.has('KeyA')?1:0) + tStrafe;
+  const az = (keys.has('Space')?1:0)
+           - ((keys.has('ShiftLeft')||keys.has('ShiftRight'))?1:0) + tUp;
+  wish.set(0, 0, 0).addScaledVector(fwd, ax).addScaledVector(right, ay).addScaledVector(UP, az);
   const sprint = sprintLatch || keys.has('AltLeft') || keys.has('AltRight');
 
   if (wish.lengthSq() > 0) vel.addScaledVector(wish.normalize(), ACCEL * dt);
