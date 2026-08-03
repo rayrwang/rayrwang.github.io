@@ -42,6 +42,9 @@
   .veil .big { font-size:19px; }
   .veil .small { color:var(--dim); font-size:13px; margin-top:8px; }
   #load .bar { width:220px; height:2px; background:#2c2e33; margin:14px auto 0; }
+  .for-touch { display:none; }
+  body.touch .for-desk  { display:none; }
+  body.touch .for-touch { display:block; }
   /* --- touch --- */
   html,body,#app { touch-action:none; -webkit-user-select:none; }
   #touch { position:fixed; inset:0; display:none; pointer-events:none; z-index:5; }
@@ -112,8 +115,14 @@
   <div class="bar"><i id="bar"></i></div>
 </div></div>
 <div class="veil" id="click" style="display:none"><div>
-  <p class="big">click to fly</p>
-  <p class="small">WASD to move, space and shift for altitude, esc to release the mouse</p>
+  <div class="for-desk">
+    <p class="big">click to fly</p>
+    <p class="small">WASD to move, space and shift for altitude, esc to release the mouse</p>
+  </div>
+  <div class="for-touch">
+    <p class="big">tap to fly</p>
+    <p class="small">bottom-left corner to move, anywhere else to look, the round buttons for altitude</p>
+  </div>
 </div></div>
 
 <script type="importmap">
@@ -202,7 +211,7 @@ function setMode(m) {
   if (m === 'lock') { modeEl.textContent = 'mouse captured';             lookEl.textContent = 'mouse'; }
   if (m === 'drag') { modeEl.textContent = 'drag-look (no capture)';     lookEl.textContent = 'hold LMB'; }
   if (m === 'idle') { modeEl.textContent = 'click to capture the mouse'; lookEl.textContent = 'mouse'; }
-  clickVeil.style.display = (m === 'idle' && !isTouch) ? 'grid' : 'none';
+  clickVeil.style.display = m === 'idle' ? 'grid' : 'none';
   xhair.style.display     = m === 'idle' ? 'none' : 'block';
 }
 
@@ -215,13 +224,15 @@ const STICK_R = 52;
 
 if (isTouch) {
   document.body.classList.add('touch');
-  clickVeil.querySelector('.big').textContent = 'tap to fly';
-  clickVeil.querySelector('.small').textContent =
-    'bottom-left corner to move, anywhere else to look, arrows for altitude';
   // pointer lock does not exist here; go straight to the flying state so the
   // veil cannot reappear when a tap produces no lock and no error event
-  dragMode = true;
-  setMode('drag');
+  // pointer lock does not exist here, so the veil is dismissed by tapping it
+  // rather than by a lock event that will never arrive
+  clickVeil.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    dragMode = true;
+    setMode('drag');
+  }, { once: true });
   modeEl.textContent = 'bottom-left to move, elsewhere to look';
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));   // mobile GPUs
 }
@@ -435,7 +446,7 @@ gltfLoader.load(MODEL_URL, gltf => {
   home();
   const el = document.getElementById('load');
   el.style.opacity = 0;
-  setTimeout(() => { el.remove(); setMode(isTouch ? 'drag' : 'idle'); }, 350);
+  setTimeout(() => { el.remove(); setMode('idle'); }, 350);
   requestAnimationFrame(tick);
 }, onProgress, err => {
   const detail = (err && (err.message || err.type || err.target?.status)) || err;
