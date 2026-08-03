@@ -140,7 +140,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
    90-degree rotation stands it up. This transform was solved by hand against a
    drawn horizon and read back out of the rig's log. */
 const MODEL_ROT_DEG = [300, 340, 350];
-const MODEL_LIFT    = -8.502;
+const MODEL_LIFT    = -5.502;   // was -8.502, raised 3 m
 const SPAWN_POS     = [-34.72, 19.53, 63.18];
 const SPAWN_YAW     = 5.973;
 const SPAWN_PITCH   = -0.3107;
@@ -243,7 +243,8 @@ let lookId = null, lookX = 0, lookY = 0;
 function onDown(e) {
   if (!isTouch) return;
   if (e.target.closest('#vert, #tkeys, a')) return;
-  const inStickZone = e.clientX < innerWidth / 2 && e.clientY > innerHeight / 2;
+  const inStickZone = e.clientX < innerWidth / 2 &&
+                      e.clientY > innerHeight * 2 / 3;
   if (inStickZone && stickId === null) {
     stickId = e.pointerId; stickOx = e.clientX; stickOy = e.clientY;
     stickEl.style.left = (e.clientX - 66) + 'px';
@@ -260,8 +261,10 @@ function onMove(e) {
     const d = Math.hypot(dx, dy);
     if (d > STICK_R) { dx *= STICK_R / d; dy *= STICK_R / d; }
     stickEl.firstElementChild.style.transform = `translate(${dx}px,${dy}px)`;
-    tStrafe = dx / STICK_R;
-    tFwd    = -dy / STICK_R;
+    const dz = 0.08;                           // deadzone
+    const norm = v => Math.abs(v) < dz ? 0 : (v - Math.sign(v) * dz) / (1 - dz);
+    tStrafe = norm(dx / STICK_R);
+    tFwd    = norm(-dy / STICK_R);
   } else if (e.pointerId === lookId) {
     yaw   -= (e.clientX - lookX) * 0.0045;
     pitch -= (e.clientY - lookY) * 0.0045;
@@ -381,9 +384,13 @@ function tick(now) {
   wish.set(0, 0, 0).addScaledVector(fwd, ax).addScaledVector(right, ay).addScaledVector(UP, az);
   const sprint = sprintLatch || keys.has('AltLeft') || keys.has('AltRight');
 
-  if (wish.lengthSq() > 0) vel.addScaledVector(wish.normalize(), ACCEL * dt);
-  vel.multiplyScalar(Math.pow(DRAG, dt));     // quick stop, slight glide
-  const top = sprint ? SPRINT : WALK;
+  const mag = Math.min(1, wish.length());       // 0..1, how far the stick is pushed
+  if (mag > 0.02) vel.addScaledVector(wish.normalize(), ACCEL * dt * mag);
+  vel.multiplyScalar(Math.pow(DRAG, dt));        // quick stop, slight glide
+  // scale the ceiling too, so half a push is half the speed rather than a
+  // slower route to the same speed. With no input leave it high so drag,
+  // not the clamp, does the decelerating.
+  const top = (sprint ? SPRINT : WALK) * (mag > 0.02 ? mag : 1);
   if (vel.length() > top) vel.setLength(top);
   camera.position.addScaledVector(vel, dt);
 
