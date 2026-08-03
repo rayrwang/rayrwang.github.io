@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/jpeg" href="/images/icon.jpg">
+<title>Nettlecombe Court</title>
+<style>
+  :root { --ink:#e8e4dc; --dim:#8a8578; --bg:#0e1013; --gold:#c9b47a; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--ink);
+              font:14px/1.5 Georgia,"Times New Roman",serif; overflow:hidden;
+              user-select:none; }
+  #app { position:fixed; inset:0; cursor:crosshair; }
+  #hud { position:fixed; top:0; left:0; padding:14px 18px;
+         text-shadow:0 1px 6px rgba(0,0,0,.6); }
+  #hud h1 { margin:0 0 2px; font-size:17px; font-weight:normal; letter-spacing:.02em; }
+  #hud .sub { color:var(--dim); font-size:12px; pointer-events:none; }
+  #hud a { color:var(--dim); text-decoration:none; border-bottom:1px solid #3a3730; }
+  #hud a:hover { color:var(--ink); }
+  #keys { position:fixed; top:0; right:0; padding:14px 18px; color:var(--dim);
+          font-size:12px; pointer-events:none; text-align:right;
+          text-shadow:0 1px 6px rgba(0,0,0,.6); }
+  #keys h2 { margin:0 0 4px; font-size:12px; font-weight:normal; color:var(--gold);
+             letter-spacing:.06em; }
+  #keys table { border-collapse:collapse; margin-left:auto; }
+  #keys td { padding:1px 0 1px 14px; }
+  #keys td.k { color:var(--ink); text-align:right; white-space:nowrap; }
+  #keys .mode { margin-top:8px; color:var(--gold); }
+  #stat { position:fixed; bottom:0; right:0; padding:12px 18px; color:var(--dim);
+          font-size:12px; text-align:right; pointer-events:none;
+          font-variant-numeric:tabular-nums; text-shadow:0 1px 6px rgba(0,0,0,.6);
+          white-space:pre; }
+  #x { position:fixed; left:50%; top:50%; width:16px; height:16px; margin:-8px 0 0 -8px;
+       pointer-events:none; opacity:.5; display:none; }
+  #x:before,#x:after { content:""; position:absolute; background:var(--ink); }
+  #x:before { left:7px; top:0; width:2px; height:16px; }
+  #x:after  { top:7px; left:0; height:2px; width:16px; }
+  .veil { position:fixed; inset:0; display:grid; place-items:center;
+          background:rgba(14,16,19,.93); transition:opacity .35s; }
+  .veil p { margin:0; text-align:center; }
+  .veil .big { font-size:19px; }
+  .veil .small { color:var(--dim); font-size:13px; margin-top:8px; }
+  #load .bar { width:220px; height:2px; background:#2c2e33; margin:14px auto 0; }
+  #load .bar i { display:block; height:100%; width:0; background:var(--gold); }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="x"></div>
+
+<div id="hud">
+  <h1>Nettlecombe Court</h1>
+  <div class="sub">photogrammetry from 492 photographs, 3 August 2026</div>
+  <div class="sub">492 photos &middot; 485 cameras solved &middot; 267,060 faces</div>
+  <div class="sub" style="margin-top:6px"><a href="/">rrw.ai</a></div>
+</div>
+
+<div id="keys">
+  <h2>controls</h2>
+  <table>
+    <tr><td class="k">W A S D</td><td>fly</td></tr>
+    <tr><td class="k">space</td><td>up</td></tr>
+    <tr><td class="k">shift</td><td>down</td></tr>
+    <tr><td class="k">ctrl</td><td>sprint</td></tr>
+    <tr><td class="k" id="lookkey">mouse</td><td>look</td></tr>
+    <tr><td class="k">F</td><td>wireframe</td></tr>
+    <tr><td class="k">G</td><td>flat grey</td></tr>
+    <tr><td class="k">R</td><td>back to start</td></tr>
+    <tr><td class="k">esc</td><td>release mouse</td></tr>
+  </table>
+  <div class="mode" id="mode">click to capture the mouse</div>
+</div>
+<div id="stat"></div>
+
+<div class="veil" id="load"><div>
+  <p class="big" id="msg">loading model</p>
+  <div class="bar"><i id="bar"></i></div>
+</div></div>
+<div class="veil" id="click" style="display:none"><div>
+  <p class="big">click to fly</p>
+  <p class="small">WASD to move, space and shift for altitude, esc to release the mouse</p>
+</div></div>
+
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader }  from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
+/* The reconstruction is not axis-aligned in its own frame, so no single
+   90-degree rotation stands it up. This transform was solved by hand against a
+   drawn horizon and read back out of the rig's log. */
+const MODEL_ROT_DEG = [300, 340, 350];
+const MODEL_LIFT    = -8.502;
+const SPAWN_POS     = [-34.72, 19.53, 63.18];
+const SPAWN_YAW     = 5.973;
+const SPAWN_PITCH   = -0.3107;
+
+const app = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.05, 20000);
+
+// The photographic textures already carry the real sunlight of the morning
+// they were taken, so the scene lighting stays flat. Anything directional
+// double-lights the model.
+scene.add(new THREE.AmbientLight(0xffffff, 2.2));
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404040, 0.6));
+
+/* ---------- sky ---------- */
+const SKY_R = 6000;
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(SKY_R, 32, 24),
+  new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false,
+    uniforms: { top:{value:new THREE.Color(0x2d4f78)}, hor:{value:new THREE.Color(0xb9a583)},
+                gnd:{value:new THREE.Color(0x141210)} },
+    vertexShader: `varying vec3 p; void main(){ p = position;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `varying vec3 p; uniform vec3 top, hor, gnd;
+      void main(){
+        float h = normalize(p).y;
+        vec3 c = h > 0.0 ? mix(hor, top, pow(h, 0.55))
+                         : mix(hor, gnd, pow(-h, 0.35));
+        gl_FragColor = vec4(c, 1.0); }`
+  })
+);
+scene.add(sky);
+
+const horizon = new THREE.Mesh(
+  new THREE.RingGeometry(SKY_R*0.985, SKY_R*0.995, 128),
+  new THREE.MeshBasicMaterial({ color:0xe8dcc0, side:THREE.DoubleSide,
+                                transparent:true, opacity:.28, depthWrite:false })
+);
+horizon.rotation.x = -Math.PI/2;
+scene.add(horizon);
+
+/* ---------- model ---------- */
+const pivot = new THREE.Group();
+scene.add(pivot);
+let root = null, wire = false, textured = true;
+
+/* ---------- flight ---------- */
+const WALK = 11, SPRINT = 26, ACCEL = 90, DRAG = 0.0016;
+const vel = new THREE.Vector3(); const keys = new Set();
+let yaw = SPAWN_YAW, pitch = SPAWN_PITCH;
+let locked = false, dragMode = false, dragging = false;
+
+const clickVeil = document.getElementById('click'), xhair = document.getElementById('x');
+const modeEl = document.getElementById('mode'), lookEl = document.getElementById('lookkey');
+
+// Look and movement are independent by construction: keys drive movement
+// whatever the mouse is doing, and looking works either through pointer lock
+// or, if a browser refuses it, by dragging.
+function setMode(m) {
+  if (m === 'lock') { modeEl.textContent = 'mouse captured';             lookEl.textContent = 'mouse'; }
+  if (m === 'drag') { modeEl.textContent = 'drag-look (no capture)';     lookEl.textContent = 'hold LMB'; }
+  if (m === 'idle') { modeEl.textContent = 'click to capture the mouse'; lookEl.textContent = 'mouse'; }
+  clickVeil.style.display = m === 'idle' ? 'grid' : 'none';
+  xhair.style.display     = m === 'idle' ? 'none' : 'block';
+}
+
+document.addEventListener('click', e => {
+  if (locked || dragMode || e.target.closest('a')) return;
+  try {
+    const p = renderer.domElement.requestPointerLock?.();
+    if (p && typeof p.catch === 'function') p.catch(fallback);
+  } catch (_) { fallback(); }
+});
+
+function fallback() { if (!dragMode) { dragMode = true; setMode('drag'); } }
+document.addEventListener('pointerlockerror', fallback);
+document.addEventListener('pointerlockchange', () => {
+  locked = document.pointerLockElement === renderer.domElement;
+  if (locked) { dragMode = false; setMode('lock'); }
+  else if (!dragMode) setMode('idle');
+  // deliberately NOT clearing held keys: losing the pointer should not cancel
+  // movement mid-flight
+});
+
+document.addEventListener('mousedown', e => {
+  if (e.button === 0 && !e.target.closest('a')) { dragging = true; e.preventDefault(); }
+});
+addEventListener('dragstart', e => e.preventDefault());
+document.addEventListener('mouseup', () => dragging = false);
+addEventListener('contextmenu', e => e.preventDefault());
+
+document.addEventListener('mousemove', e => {
+  if (!(locked || dragging)) return;
+  if (!locked && !dragMode) fallback();
+  yaw   -= e.movementX * 0.0022;
+  pitch -= e.movementY * 0.0022;
+  pitch  = Math.max(-1.553, Math.min(1.553, pitch));
+});
+
+addEventListener('keydown', e => {
+  keys.add(e.code);
+  if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+  if (!root) return;
+  const c = e.key.toLowerCase();
+  if (c === 'f') {
+    wire = !wire;
+    root.traverse(o => { if (o.isMesh) [].concat(o.material).forEach(m => m.wireframe = wire); });
+  } else if (c === 'g') {
+    textured = !textured;
+    root.traverse(o => { if (o.isMesh) [].concat(o.material).forEach(m => {
+      if (m.userData.map === undefined) m.userData.map = m.map;
+      m.map = textured ? m.userData.map : null;
+      m.color.set(textured ? 0xffffff : 0x9a9384);
+      m.needsUpdate = true;
+    }); });
+  } else if (c === 'r') home();
+}, true);
+addEventListener('keyup', e => keys.delete(e.code), true);
+document.addEventListener('visibilitychange', () => { if (document.hidden) keys.clear(); });
+
+function home() {
+  camera.position.set(...SPAWN_POS);
+  yaw = SPAWN_YAW; pitch = SPAWN_PITCH;
+  vel.set(0, 0, 0);
+}
+
+/* ---------- loop ---------- */
+const fwd = new THREE.Vector3(), right = new THREE.Vector3(), wish = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+let last = performance.now();
+
+function tick(now) {
+  requestAnimationFrame(tick);
+  const dt = Math.min((now - last) / 1000, 0.1); last = now;
+
+  camera.quaternion.setFromEuler(new THREE.Euler(pitch, yaw, 0, 'YXZ'));
+  camera.getWorldDirection(fwd);              // forward follows the full look direction
+  right.crossVectors(fwd, UP).normalize();
+
+  wish.set(0, 0, 0);
+  if (keys.has('KeyW')) wish.add(fwd);
+  if (keys.has('KeyS')) wish.sub(fwd);
+  if (keys.has('KeyD')) wish.add(right);
+  if (keys.has('KeyA')) wish.sub(right);
+  if (keys.has('Space')) wish.add(UP);
+  if (keys.has('ShiftLeft') || keys.has('ShiftRight')) wish.sub(UP);
+  const sprint = keys.has('ControlLeft') || keys.has('ControlRight');
+
+  if (wish.lengthSq() > 0) vel.addScaledVector(wish.normalize(), ACCEL * dt);
+  vel.multiplyScalar(Math.pow(DRAG, dt));     // quick stop, slight glide
+  const top = sprint ? SPRINT : WALK;
+  if (vel.length() > top) vel.setLength(top);
+  camera.position.addScaledVector(vel, dt);
+
+  const targetFov = sprint && wish.lengthSq() > 0 ? 78 : 70;
+  if (Math.abs(camera.fov - targetFov) > 0.1) {
+    camera.fov += (targetFov - camera.fov) * Math.min(dt * 8, 1);
+    camera.updateProjectionMatrix();
+  }
+
+  sky.position.copy(camera.position);         // sky follows, so it never clips
+  horizon.position.set(camera.position.x, 0, camera.position.z);
+
+  document.getElementById('stat').textContent =
+    `${vel.length().toFixed(1)} m/s${sprint ? '  sprint' : ''}\nalt ${camera.position.y.toFixed(0)} m`;
+
+  renderer.render(scene, camera);
+}
+
+/* ---------- load ---------- */
+const bar = document.getElementById('bar'), msg = document.getElementById('msg');
+const onProgress = e => {
+  if (!e.lengthComputable) return;
+  bar.style.width = (e.loaded / e.total * 100).toFixed(1) + '%';
+  msg.textContent = `loading model  ${(e.loaded/1048576).toFixed(0)} / ${(e.total/1048576).toFixed(0)} MB`;
+};
+
+const draco = new DRACOLoader();
+draco.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/');
+const gltfLoader = new GLTFLoader();
+gltfLoader.setDRACOLoader(draco);
+
+gltfLoader.load('assets/nettlecombe.glb', gltf => {
+  root = gltf.scene;
+  root.traverse(o => {
+    if (!o.isMesh) return;
+    [].concat(o.material).forEach(m => {
+      // glTF materials default to fully metallic, which renders black under
+      // the flat ambient lighting this scene uses
+      m.metalness = 0;
+      m.roughness = 1;
+      if (m.map) m.map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    });
+  });
+
+  // Centre the mesh on its own bounding box, then rotate and lift the pivot.
+  const box = new THREE.Box3().setFromObject(root);
+  root.position.sub(box.getCenter(new THREE.Vector3()));
+  pivot.add(root);
+  pivot.rotation.set(THREE.MathUtils.degToRad(MODEL_ROT_DEG[0]),
+                     THREE.MathUtils.degToRad(MODEL_ROT_DEG[1]),
+                     THREE.MathUtils.degToRad(MODEL_ROT_DEG[2]));
+  pivot.position.y = MODEL_LIFT;
+
+  home();
+  const el = document.getElementById('load');
+  el.style.opacity = 0;
+  setTimeout(() => { el.remove(); setMode('idle'); }, 350);
+  requestAnimationFrame(tick);
+}, onProgress, err => { msg.textContent = 'could not load the model'; console.error(err); });
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
