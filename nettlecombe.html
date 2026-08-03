@@ -58,7 +58,7 @@
                  color:var(--ink); background:rgba(232,228,220,.09);
                  border:1px solid rgba(232,228,220,.28); }
   #vert button:active { background:rgba(201,180,122,.35); }
-  #tkeys { position:absolute; left:16px; bottom:26px; display:flex; gap:10px;
+  #tkeys { position:absolute; right:20px; top:16px; display:flex; gap:10px;
            pointer-events:auto; }
   #tkeys button { padding:9px 14px; border-radius:8px; font:13px Georgia,serif;
                   color:var(--ink); background:rgba(232,228,220,.09);
@@ -218,7 +218,7 @@ if (isTouch) {
   // veil cannot reappear when a tap produces no lock and no error event
   dragMode = true;
   setMode('drag');
-  modeEl.textContent = 'left thumb to move, right side to look';
+  modeEl.textContent = 'bottom-left to move, elsewhere to look';
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));   // mobile GPUs
 }
 
@@ -228,7 +228,8 @@ let lookId = null, lookX = 0, lookY = 0;
 function onDown(e) {
   if (!isTouch) return;
   if (e.target.closest('#vert, #tkeys, a')) return;
-  if (e.clientX < innerWidth / 2 && stickId === null) {
+  const inStickZone = e.clientX < innerWidth / 2 && e.clientY > innerHeight / 2;
+  if (inStickZone && stickId === null) {
     stickId = e.pointerId; stickOx = e.clientX; stickOy = e.clientY;
     stickEl.style.left = (e.clientX - 66) + 'px';
     stickEl.style.top  = (e.clientY - 66) + 'px';
@@ -401,7 +402,10 @@ gltfLoader.setDRACOLoader(draco);
 
 // 56 atlases at 2048px decompress to about 1.2 GB of GPU memory, which
 // kills a phone tab. The mobile build is 1024px, about 300 MB.
-const MODEL_URL = isTouch ? 'assets/nettlecombe.mobile.glb' : 'assets/nettlecombe.glb';
+const MODELS = { high: 'assets/nettlecombe.glb', mobile: 'assets/nettlecombe.mobile.glb', tiny: 'assets/nettlecombe.tiny.glb' };
+// ?model=high|mobile|tiny overrides, so a variant can be bisected from the phone
+const pick = new URLSearchParams(location.search).get('model');
+const MODEL_URL = MODELS[pick] || (isTouch ? MODELS.mobile : MODELS.high);
 gltfLoader.load(MODEL_URL, gltf => {
   root = gltf.scene;
   root.traverse(o => {
@@ -427,9 +431,14 @@ gltfLoader.load(MODEL_URL, gltf => {
   home();
   const el = document.getElementById('load');
   el.style.opacity = 0;
-  setTimeout(() => { el.remove(); setMode('idle'); }, 350);
+  setTimeout(() => { el.remove(); setMode(isTouch ? 'drag' : 'idle'); }, 350);
   requestAnimationFrame(tick);
-}, onProgress, err => { msg.textContent = 'could not load the model'; console.error(err); });
+}, onProgress, err => {
+  const detail = (err && (err.message || err.type || err.target?.status)) || err;
+  msg.innerHTML = 'could not load the model<br><span style="font-size:12px;color:#8a8578">'
+    + String(detail).slice(0, 200) + '<br>' + MODEL_URL + '</span>';
+  console.error('load failed', MODEL_URL, err);
+});
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
