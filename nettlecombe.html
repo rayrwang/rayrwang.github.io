@@ -191,6 +191,7 @@ let yaw = SPAWN_YAW, pitch = SPAWN_PITCH;
 let sprintLatch = false, lastW = 0;
 let locked = false, dragMode = false, dragging = false;
 
+const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
 const clickVeil = document.getElementById('click'), xhair = document.getElementById('x');
 const modeEl = document.getElementById('mode'), lookEl = document.getElementById('lookkey');
 
@@ -201,19 +202,22 @@ function setMode(m) {
   if (m === 'lock') { modeEl.textContent = 'mouse captured';             lookEl.textContent = 'mouse'; }
   if (m === 'drag') { modeEl.textContent = 'drag-look (no capture)';     lookEl.textContent = 'hold LMB'; }
   if (m === 'idle') { modeEl.textContent = 'click to capture the mouse'; lookEl.textContent = 'mouse'; }
-  clickVeil.style.display = m === 'idle' ? 'grid' : 'none';
+  clickVeil.style.display = (m === 'idle' && !isTouch) ? 'grid' : 'none';
   xhair.style.display     = m === 'idle' ? 'none' : 'block';
 }
 
 
 /* ---------- touch ---------- */
-const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+
 let tFwd = 0, tStrafe = 0, tUp = 0;          // analog axes, -1..1
 const stickEl = document.getElementById('stick');
 const STICK_R = 52;
 
 if (isTouch) {
   document.body.classList.add('touch');
+  clickVeil.querySelector('.big').textContent = 'tap to fly';
+  clickVeil.querySelector('.small').textContent =
+    'bottom-left corner to move, anywhere else to look, arrows for altitude';
   // pointer lock does not exist here; go straight to the flying state so the
   // veil cannot reappear when a tap produces no lock and no error event
   dragMode = true;
