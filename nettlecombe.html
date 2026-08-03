@@ -399,7 +399,10 @@ draco.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/')
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(draco);
 
-gltfLoader.load('assets/nettlecombe.glb', gltf => {
+// 56 atlases at 2048px decompress to about 1.2 GB of GPU memory, which
+// kills a phone tab. The mobile build is 1024px, about 300 MB.
+const MODEL_URL = isTouch ? 'assets/nettlecombe.mobile.glb' : 'assets/nettlecombe.glb';
+gltfLoader.load(MODEL_URL, gltf => {
   root = gltf.scene;
   root.traverse(o => {
     if (!o.isMesh) return;
