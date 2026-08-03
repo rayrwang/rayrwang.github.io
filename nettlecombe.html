@@ -62,7 +62,8 @@
     <tr><td class="k">W A S D</td><td>fly</td></tr>
     <tr><td class="k">space</td><td>up</td></tr>
     <tr><td class="k">shift</td><td>down</td></tr>
-    <tr><td class="k">ctrl</td><td>sprint</td></tr>
+    <tr><td class="k">W W</td><td>sprint (double tap)</td></tr>
+    <tr><td class="k">alt</td><td>sprint (hold)</td></tr>
     <tr><td class="k" id="lookkey">mouse</td><td>look</td></tr>
     <tr><td class="k">F</td><td>wireframe</td></tr>
     <tr><td class="k">G</td><td>flat grey</td></tr>
@@ -154,6 +155,7 @@ let root = null, wire = false, textured = true;
 const WALK = 11, SPRINT = 26, ACCEL = 90, DRAG = 0.0016;
 const vel = new THREE.Vector3(); const keys = new Set();
 let yaw = SPAWN_YAW, pitch = SPAWN_PITCH;
+let sprintLatch = false, lastW = 0;
 let locked = false, dragMode = false, dragging = false;
 
 const clickVeil = document.getElementById('click'), xhair = document.getElementById('x');
@@ -205,6 +207,11 @@ document.addEventListener('mousemove', e => {
 
 addEventListener('keydown', e => {
   keys.add(e.code);
+  if (e.code === 'KeyW' && !e.repeat) {
+    if (performance.now() - lastW < 300) sprintLatch = true;   // double tap to sprint
+    lastW = performance.now();
+  }
+  if (e.code === 'AltLeft' || e.code === 'AltRight') e.preventDefault();
   if (['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   if (!root) return;
   const c = e.key.toLowerCase();
@@ -221,7 +228,10 @@ addEventListener('keydown', e => {
     }); });
   } else if (c === 'r') home();
 }, true);
-addEventListener('keyup', e => keys.delete(e.code), true);
+addEventListener('keyup', e => {
+  keys.delete(e.code);
+  if (e.code === 'KeyW') sprintLatch = false;
+}, true);
 document.addEventListener('visibilitychange', () => { if (document.hidden) keys.clear(); });
 
 function home() {
@@ -250,7 +260,7 @@ function tick(now) {
   if (keys.has('KeyA')) wish.sub(right);
   if (keys.has('Space')) wish.add(UP);
   if (keys.has('ShiftLeft') || keys.has('ShiftRight')) wish.sub(UP);
-  const sprint = keys.has('ControlLeft') || keys.has('ControlRight');
+  const sprint = sprintLatch || keys.has('AltLeft') || keys.has('AltRight');
 
   if (wish.lengthSq() > 0) vel.addScaledVector(wish.normalize(), ACCEL * dt);
   vel.multiplyScalar(Math.pow(DRAG, dt));     // quick stop, slight glide
