@@ -412,16 +412,31 @@ function tick(now) {
 
 /* ---------- load ---------- */
 const bar = document.getElementById('bar'), msg = document.getElementById('msg');
+// 56 atlases at 2048px decompress to about 1.2 GB of GPU memory, which
+// kills a phone tab. The mobile build is 1024px, about 300 MB.
+const MODELS = { high: 'assets/nettlecombe.glb', mobile: 'assets/nettlecombe.mobile.glb', tiny: 'assets/nettlecombe.tiny.glb' };
+// ?model=high|mobile|tiny overrides, so a variant can be bisected from the phone
+const pick = new URLSearchParams(location.search).get('model');
+// hasOwn, not a truthiness test: ?model=constructor would otherwise pick up an
+// inherited property and hand a function to the size lookup below
+const MODEL_KEY = Object.hasOwn(MODELS, pick) ? pick : (isTouch ? 'mobile' : 'high');
+const MODEL_URL = MODELS[MODEL_KEY];
+
+// The sizes of those files as they sit on disk. The server sends them with
+// content-encoding: gzip, so the Content-Length a progress event carries
+// describes the compressed stream (19,006,561 for the high build) while e.loaded
+// counts bytes after decompression (19,712,040). Dividing one by the other mixed
+// two units: the bar ran to 103.7% and the readout ended on "19 / 18 MB". Taking
+// the real size from here keeps the denominator still for the whole download,
+// instead of reading 18 until the stream overtakes the header and then 19.
+// Keep these in step with the files in assets/.
+const MODEL_BYTES = { high: 19712040, mobile: 8713608, tiny: 3850540 };
+
 const onProgress = e => {
   if (!e.lengthComputable) return;
-  // The deployed site serves the .glb with content-encoding: gzip, so e.total is
-  // the compressed length off the header (19,006,561) while e.loaded counts bytes
-  // after decompression (19,712,040). Dividing one by the other measured the two
-  // in different units: the bar ran to 103.7% and overhung its track, and the
-  // readout finished on "19 / 18 MB". Taking the larger as the denominator keeps
-  // them consistent once the decompressed stream overtakes the header. The dev
-  // server sends the file uncompressed, which is why this never showed locally.
-  const total = Math.max(e.total, e.loaded);
+  // Falling back to whichever of the header and the stream has run further means
+  // a stale entry above degrades rather than pushing the bar past 100%.
+  const total = Math.max(MODEL_BYTES[MODEL_KEY] || 0, e.total, e.loaded);
   bar.style.width = (e.loaded / total * 100).toFixed(1) + '%';
   msg.textContent = `loading model  ${(e.loaded/1048576).toFixed(0)} / ${(total/1048576).toFixed(0)} MB`;
 };
@@ -431,12 +446,6 @@ draco.setDecoderPath('https://unpkg.com/three@0.160.0/examples/jsm/libs/draco/')
 const gltfLoader = new GLTFLoader();
 gltfLoader.setDRACOLoader(draco);
 
-// 56 atlases at 2048px decompress to about 1.2 GB of GPU memory, which
-// kills a phone tab. The mobile build is 1024px, about 300 MB.
-const MODELS = { high: 'assets/nettlecombe.glb', mobile: 'assets/nettlecombe.mobile.glb', tiny: 'assets/nettlecombe.tiny.glb' };
-// ?model=high|mobile|tiny overrides, so a variant can be bisected from the phone
-const pick = new URLSearchParams(location.search).get('model');
-const MODEL_URL = MODELS[pick] || (isTouch ? MODELS.mobile : MODELS.high);
 gltfLoader.load(MODEL_URL, gltf => {
   root = gltf.scene;
   root.traverse(o => {
