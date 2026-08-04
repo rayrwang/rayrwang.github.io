@@ -41,7 +41,8 @@
   .veil p { margin:0; text-align:center; }
   .veil .big { font-size:19px; }
   .veil .small { color:var(--dim); font-size:13px; margin-top:8px; }
-  #load .bar { width:220px; height:2px; background:#2c2e33; margin:14px auto 0; }
+  #load .bar { width:220px; height:2px; background:#2c2e33; margin:14px auto 0;
+               overflow:hidden; }
   .for-touch { display:none; }
   body.touch .for-desk  { display:none; }
   body.touch .for-touch { display:block; }
@@ -140,7 +141,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
    90-degree rotation stands it up. This transform was solved by hand against a
    drawn horizon and read back out of the rig's log. */
 const MODEL_ROT_DEG = [300, 340, 350];
-const MODEL_LIFT    = -5.502;   // was -8.502, raised 3 m
+const MODEL_LIFT    = -4.502;   // -8.502 originally, raised 3 m, then 1 m more
 const SPAWN_POS     = [-34.72, 19.53, 63.18];
 const SPAWN_YAW     = 5.973;
 const SPAWN_PITCH   = -0.3107;
@@ -413,8 +414,16 @@ function tick(now) {
 const bar = document.getElementById('bar'), msg = document.getElementById('msg');
 const onProgress = e => {
   if (!e.lengthComputable) return;
-  bar.style.width = (e.loaded / e.total * 100).toFixed(1) + '%';
-  msg.textContent = `loading model  ${(e.loaded/1048576).toFixed(0)} / ${(e.total/1048576).toFixed(0)} MB`;
+  // The deployed site serves the .glb with content-encoding: gzip, so e.total is
+  // the compressed length off the header (19,006,561) while e.loaded counts bytes
+  // after decompression (19,712,040). Dividing one by the other measured the two
+  // in different units: the bar ran to 103.7% and overhung its track, and the
+  // readout finished on "19 / 18 MB". Taking the larger as the denominator keeps
+  // them consistent once the decompressed stream overtakes the header. The dev
+  // server sends the file uncompressed, which is why this never showed locally.
+  const total = Math.max(e.total, e.loaded);
+  bar.style.width = (e.loaded / total * 100).toFixed(1) + '%';
+  msg.textContent = `loading model  ${(e.loaded/1048576).toFixed(0)} / ${(total/1048576).toFixed(0)} MB`;
 };
 
 const draco = new DRACOLoader();
