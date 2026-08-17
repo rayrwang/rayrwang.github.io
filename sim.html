@@ -1,0 +1,2103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/jpeg" href="/images/icon.jpg">
+<title>Globe Ballistics Simulator &middot; Raymond Wang</title>
+<meta name="description" content="Projectile flight simulated on a real globe: real terrain, real forecast wind and air density, Mach-dependent drag. A balloon, a record fastball, a crossbow bolt, a 9 mm round, a .50 BMG, Yamato's 46 cm gun, the Pascal-B manhole cover, and a Falcon 9 ascent to orbit.">
+<script src="globe.js"></script>
+<style>
+  html, body { margin:0; height:100%; font-family:system-ui, sans-serif; background:#05070c;
+               overflow:hidden; }
+  #glc { position:absolute; inset:0; width:100%; height:100%; display:block; }
+  .gmk { position:absolute; left:0; top:0; pointer-events:none; z-index:5;
+         will-change:transform; visibility:hidden; }
+  #attrib { position:absolute; right:6px; bottom:4px; z-index:8; color:#3c4650;
+            font-size:10px; background:rgba(255,255,255,.55); padding:1px 6px;
+            border-radius:4px; }
+  #attrib a { color:#31506e; }
+
+  .panel { position:absolute; z-index:10; background:rgba(16,18,22,.92); color:#dde3ea;
+           border-radius:10px; padding:10px 12px; font-size:13px; box-shadow:0 2px 12px rgba(0,0,0,.5); }
+  #ctl { top:10px; left:10px; width:270px; max-height:calc(100% - 20px); overflow-y:auto; }
+  #hud { top:10px; right:10px; width:215px; }
+  /* landing result and the step hint share one bottom stack, so they can
+     never sit on top of each other (they used to be independently pinned
+     to the same 24px offset, which only worked because the hint hid
+     itself whenever the pointer was locked) */
+  #bottomStack { position:absolute; left:0; right:0; bottom:20px; z-index:10;
+                 display:flex; flex-direction:column; align-items:center; gap:8px;
+                 pointer-events:none; }
+  #bottomStack .panel { position:static; transform:none; pointer-events:auto; }
+  #landPanel { display:none; text-align:center; }
+  #flyHint { text-align:center; color:#cdd6df; font-size:12px; max-width:560px; }
+  #flyHint b { color:#fff; font-weight:600; }
+
+  h1 { font-size:15px; margin:0 0 2px; color:#fff; }
+  .hint { color:#9fb4c8; font-size:12px; min-height:15px; margin-bottom:6px; }
+  .sec { border-top:1px solid #2a2f36; padding-top:7px; margin-top:7px; }
+  label { display:flex; align-items:center; justify-content:space-between; gap:6px; margin:3px 0; }
+  label span { color:#aab4bf; }
+  input[type=number], select { background:#1c2128; color:#e8edf2; border:1px solid #333a44;
+      border-radius:5px; padding:2px 5px; width:88px; font-size:13px; }
+  select { width:auto; max-width:160px; }
+  button { background:#2b6cb0; color:#fff; border:0; border-radius:6px; padding:5px 10px;
+           font-size:13px; cursor:pointer; }
+  button:hover { background:#3182ce; }
+  button.small { padding:2px 8px; font-size:12px; background:#39424d; }
+  #badge { color:#f6ad55; font-size:11px; margin-left:6px; }
+  details { margin-top:6px; }
+  summary { cursor:pointer; color:#9fb4c8; font-size:12px; }
+  table { border-collapse:collapse; width:100%; font-size:11px; margin-top:4px; }
+  td, th { padding:1px 4px; text-align:right; color:#cdd6df; }
+  th { color:#8b98a5; font-weight:normal; }
+  #clock { font-size:22px; font-variant-numeric:tabular-nums; color:#fff; }
+  #clock small { font-size:13px; color:#9fb4c8; }
+  .hudrow { display:flex; justify-content:space-between; margin:2px 0; font-variant-numeric:tabular-nums; }
+  .hudrow span:first-child { color:#8b98a5; }
+  .radio { display:flex; gap:10px; margin:3px 0; }
+  .radio label { justify-content:flex-start; }
+
+  #crosshair { position:absolute; left:50%; top:50%; width:22px; height:22px; margin:-11px;
+      z-index:20; pointer-events:none; display:none; }
+  #crosshair::before, #crosshair::after { content:""; position:absolute; background:#fff;
+      mix-blend-mode:difference; }
+  #crosshair::before { left:10px; top:0; width:2px; height:22px; }
+  #crosshair::after { left:0; top:10px; width:22px; height:2px; }
+
+  .padIcon { width:18px; height:18px; border-radius:50%; border:2px solid #fff;
+      background:#e53e3e; box-shadow:0 0 6px rgba(0,0,0,.6); }
+  .ghost { opacity:.45; pointer-events:none; }
+  .posWrap { position:relative; width:16px; height:16px; pointer-events:none; }
+  .dot { width:12px; height:12px; border-radius:50%; border:2px solid #101216;
+      box-shadow:0 0 5px rgba(0,0,0,.55); }
+  .posLbl { position:absolute; left:18px; top:-2px; background:rgba(16,18,22,.85); color:#fff;
+      font-size:11px; padding:1px 6px; border-radius:4px; white-space:nowrap;
+      font-variant-numeric:tabular-nums; }
+  #objTag { position:absolute; z-index:15; display:none; background:rgba(16,18,22,.85);
+      color:#fff; font-size:11px; padding:1px 6px; border-radius:4px; white-space:nowrap;
+      font-variant-numeric:tabular-nums; pointer-events:none; }
+  /* the object itself: a prominent blue disc billboard at the true 3D point */
+  #objDot { position:absolute; z-index:14; display:none; width:15px; height:15px;
+      margin:-7.5px 0 0 -7.5px; border-radius:50%; background:#3b82f6;
+      border:2.5px solid #fff; box-shadow:0 0 8px rgba(0,0,0,.65); pointer-events:none; }
+</style>
+</head>
+<body>
+<canvas id="glc"></canvas>
+<div id="attrib"><a href="/">rrw.ai</a> &middot;
+  &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>
+  contributors &middot; terrain Mapzen/AWS &middot; buildings OpenFreeMap</div>
+<div id="crosshair"></div>
+<div id="objTag"></div>
+<div id="objDot"></div>
+
+<div id="ctl" class="panel">
+  <h1>Trajectory simulator</h1>
+  <div class="hint" id="stateHint">Click the map, then left click to set the launch point.</div>
+
+  <label><span>Preset</span>
+    <span><select id="preset">
+      <option value="balloon">Released helium balloon</option>
+      <option value="baseball">Baseball, world-record pitch</option>
+      <option value="crossbow">Crossbow, fastest made (515 fps)</option>
+      <option value="pistol" selected>Pistol, 9 mm 115 gr</option>
+      <option value="fifty">Rifle, .50 BMG M33 ball</option>
+      <option value="yamato">Naval gun, Yamato 46 cm</option>
+      <option value="manhole">Manhole cover, Pascal-B (1957)</option>
+      <option value="falcon9">Falcon 9, ascent to orbit</option>
+    </select><span id="badge"></span></span>
+  </label>
+
+  <div class="sec">
+    <label id="headingRow"><span>Heading</span><b id="headingOut">&ndash;</b></label>
+    <label id="angleRow"><span>Launch angle (deg)</span><input id="angle" type="number" step="1" min="-90" max="90"></label>
+    <div id="aimNote" class="hint" style="display:none">Released, not aimed: one click places it and lets go.</div>
+    <label><span>Air resistance</span><input id="dragToggle" type="checkbox" checked></label>
+    <label><span>Ground at launch</span><b id="groundOut">&ndash;</b></label>
+  </div>
+
+  <div class="sec">
+    <div class="radio">
+      <label><input type="radio" name="wmode" id="windManual"> manual wind</label>
+      <label><input type="radio" name="wmode" id="windCurrent" checked> current wind</label>
+    </div>
+    <div class="hint" id="windNote" style="display:none"></div>
+    <div id="windManualBox" style="display:none">
+      <label><span>Speed (m/s)</span><input id="windSpeed" type="number" step="0.5" min="0" value="3"></label>
+      <label><span>From (deg)</span><input id="windDir" type="number" step="5" min="0" max="360" value="270"></label>
+    </div>
+    <div id="windCurrentBox">
+      <button class="small" id="fetchWind">Fetch profile</button>
+      <span class="hint" id="windStatus" style="display:inline"></span>
+      <div style="max-height:150px; overflow-y:auto"><table id="windTable"></table></div>
+    </div>
+  </div>
+
+  <div class="sec">
+    <div style="display:flex; align-items:center; gap:8px">
+      <button id="playPause">Pause</button>
+      <select id="timeSpeed">
+        <option value="0.1">0.1x</option><option value="1" selected>1x</option><option value="10">10x</option>
+        <option value="60">60x</option><option value="300">300x</option><option value="1000">1000x</option>
+      </select>
+      <div id="clock">0:00<small>.0</small></div>
+      <span id="pauseFlag" style="display:none; color:#f6ad55; font-size:11px">paused</span>
+    </div>
+    <div class="hint" style="margin:3px 0 0">T pauses the sim.</div>
+  </div>
+
+  <details id="paramsBox">
+    <summary>Parameters (preset-managed)</summary>
+    <label><span>Projectile</span>
+      <select id="ptype"><option value="balloon">helium balloon</option><option value="ball">ball</option><option value="rocket">rocket (staged, powered)</option></select></label>
+    <label><span>Launch speed (m/s)</span><input id="speed" type="number" step="0.1" min="0"></label>
+    <label><span>Release height (m AGL)</span><input id="relH" type="number" step="0.1" min="0"></label>
+    <label><span>Integrator dt (s)</span><input id="dtStep" type="number" step="0.001" min="0.0005"></label>
+    <div id="balloonParams">
+      <label><span>Fill diameter (cm)</span><input id="bDiam" type="number" step="1"></label>
+      <label><span>Latex mass (g)</span><input id="bLatex" type="number" step="0.1"></label>
+      <label><span>Drag Cd (sphere)</span><input id="bCd" type="number" step="0.01"></label>
+      <label><span>Burst stretch (x diam)</span><input id="bStretch" type="number" step="0.1"></label>
+      <label><span>Burst altitude (m MSL)</span><input id="bBurstAlt" type="number" step="100"></label>
+      <label><span>Scrap Cd</span><input id="bScrapCd" type="number" step="0.1"></label>
+      <label><span>Scrap area (cm&sup2;)</span><input id="bScrapArea" type="number" step="0.5"></label>
+    </div>
+    <div id="ballParams" style="display:none">
+      <label><span>Drag model</span><b id="dragModelOut">&ndash;</b></label>
+      <label><span>Mass (g)</span><input id="mMass" type="number" step="1"></label>
+      <label><span>Diameter (mm)</span><input id="mDiam" type="number" step="1"></label>
+      <label><span>Drag Cd</span><input id="mCd" type="number" step="0.01"></label>
+      <label><span>Backspin (rpm)</span><input id="mRpm" type="number" step="100"></label>
+      <label><span>Magnus Cl</span><input id="mCl" type="number" step="0.01"></label>
+    </div>
+  </details>
+</div>
+
+<div id="hud" class="panel">
+  <div class="hudrow"><span>Phase</span><b id="hudPhase">idle</b></div>
+  <div class="hudrow"><span>Pitch</span><span id="hudPitch">&ndash;</span></div>
+  <div class="hudrow"><span>Alt AGL</span><span id="hudAgl">&ndash;</span></div>
+  <div class="hudrow"><span>Alt MSL</span><span id="hudMsl">&ndash;</span></div>
+  <div class="hudrow"><span>Air speed</span><span id="hudAir">&ndash;</span></div>
+  <div class="hudrow"><span>Ground speed</span><span id="hudGnd">&ndash;</span></div>
+  <div class="hudrow"><span>Vert speed</span><span id="hudVs">&ndash;</span></div>
+  <div class="hudrow"><span>From launch</span><span id="hudDist">&ndash;</span></div>
+  <div class="hudrow"><span>Mach &middot; Cd</span><span id="hudMach">&ndash;</span></div>
+  <label style="margin-top:5px"><span>Follow object</span><input id="followToggle" type="checkbox"></label>
+</div>
+
+<div id="bottomStack">
+  <div id="landPanel" class="panel"><b id="landTitle">Landed</b><div id="landStats"></div></div>
+  <div id="flyHint" class="panel"></div>
+</div>
+
+<script>
+"use strict";
+
+/* ---------- constants and presets ---------- */
+
+// Default view: 15 Woodvalley Court, Hamilton, Ontario L9B 0A8.
+// Geocoded once at build time via Nominatim (2026-08-16):
+//   osm node 1134738568, lat 43.2162434, lon -79.9210535
+const HOME = { lat: 43.2162434, lon: -79.9210535, elev: 236 };  // elev per Open-Meteo
+
+const R_AIR = 287.053;    // specific gas constant, dry air, J/(kg K)
+const R_HE = 2077.1;      // specific gas constant, helium, J/(kg K)
+const R_EARTH = 6371000;  // mean earth radius, m; MSL is the sphere |r| = R_EARTH
+const GM = 3.986004418e14;    // Earth's gravitational parameter, m^3/s^2
+const OMEGA = 7.2921159e-5;   // Earth rotation rate, rad/s, about ECEF +z
+
+// Order set by RW: balloon, baseball, crossbow, pistol, .50 BMG, Yamato,
+// manhole cover. For reference, range at 45 degrees with no wind: baseball
+// 120 m, crossbow 631 m, pistol 1.6 km, .50 BMG 6.0 km, manhole cover
+// 6.3 km, Yamato 42 km; the balloon drifts about 55 km on real wind.
+const PRESETS = {
+  // A single 28 cm latex party balloon released by hand.
+  balloon: {
+    ptype: "balloon",
+    speed: 0,          // released, not thrown
+    aimless: true,     // released at zero speed, so heading and launch angle do
+                       // nothing: placing the point IS the launch
+    angle: 90,         // straight up (irrelevant at speed 0)
+    relH: 1.5,         // let go at hand height
+    dt: 0.1,           // s; balloon velocity time constant ~0.14 s, RK4 stable well past that
+    drag: true,
+    timeSpeed: 1,      // real time by default; crank to 60/300/1000 for the full arc
+    bDiam: 28,         // cm; common party balloon inflated size
+    bLatex: 2.8,       // g; typical 11-inch latex balloon envelope mass
+    bCd: 0.47,         // sphere drag coefficient, subcritical Re
+    bStretch: 2.0,     // burst when diameter reaches 2x fill diameter (8x volume).
+                       // Party latex tears at moderate extra stretch beyond the
+                       // already-stretched inflated state; 2x diameter is a
+                       // common rule of thumb for toy balloons (weather balloons
+                       // manage 4-6x from a nearly unstretched start).
+    bBurstAlt: 9500,   // m MSL; cold embrittlement. Latex stiffens toward its
+                       // glass transition (about -40 to -50 C, reached near
+                       // 9-10 km in a standard atmosphere) and observed
+                       // party-balloon bursts cluster around 8-10 km.
+    bScrapCd: 1.0,     // fluttering flat scrap, bluff-body Cd ~1
+    bScrapArea: 9.2,   // cm^2 effective; with Cd 1.0 and m 2.8 g this gives a
+                       // sea-level terminal fall of 7.0 m/s, inside the 6-8 m/s
+                       // range reported for balloon fragments and light debris
+  },
+  // Aroldis Chapman, 2010, fastest recorded MLB pitch.
+  baseball: {
+    ptype: "ball",
+    speed: 47.3,       // m/s = 105.8 mph, the record radar reading
+    angle: -1,         // a real fastball leaves the hand slightly downward
+    relH: 1.8,         // m AGL release height, typical for an MLB delivery
+    dt: 0.001,         // s; ~1 s flight, 1 ms keeps RK4 error negligible
+    drag: true,
+    timeSpeed: 1,      // real time everywhere; drop to 0.1x to study the arc
+    mMass: 145,        // g; official MLB ball 142-149 g
+    mDiam: 74,         // mm; official MLB ball 73-76 mm
+    mCd: 0.33,         // measured baseball drag coefficient at ~40-50 m/s
+    mRpm: 2200,        // typical four-seam backspin
+    mCl: 0.20,         // lift coefficient at spin ratio S = r*omega/v ~ 0.18.
+                       // Nathan-style parametrizations give Cl ~ 0.2 there; the
+                       // 0.2-0.25 band's low end chosen (measured MLB "ride"
+                       // suggests the true value is nearer 0.15).
+  },
+  // The most powerful bow-and-arrow made: a modern reverse-draw crossbow.
+  // TenPoint's TRX Ultra is the fastest production crossbow of 2026 at 515 fps
+  // with a 410 gr bolt, about 327 J at the string, which beats any hand-drawn
+  // bow by a wide margin (the Guinness record for a drawn longbow is Mark
+  // Stretton's 200 lb warbow, 15 Aug 2004, around 100 J). Sources disagree by a
+  // few fps between the TRX Ultra and the Nitro 505; either is within noise here.
+  crossbow: {
+    ptype: "ball",
+    speed: 157,        // m/s = 515 fps
+    angle: 45,
+    relH: 1.5,
+    dt: 0.002,
+    drag: true,
+    timeSpeed: 1,
+    mMass: 26.6,       // g = 410 grains, bolt plus point
+    mDiam: 8.0,        // mm shaft; the drag reference area is the shaft cross
+                       // section, with the fletching's contribution folded into Cd
+    dragModel: "fixed",// an arrow stays near Mach 0.45 for its whole flight, so
+                       // there is no transonic behaviour to model and a constant
+                       // is honest here, unlike for the bullet
+    mCd: 1.8,          // fletched shaft referenced to shaft area. Fitted to the
+                       // ~7% velocity loss over 40 yards that chronographed bolt
+                       // data shows, and inside the 1.5-2.5 range published for
+                       // arrows. Much higher than a bullet's because the shaft is
+                       // long and thin and the fletching is a drag device by design.
+    mRpm: 0,           // fletching spin is about the long axis: no Magnus lift
+    mCl: 0,
+  },
+  // 9x19mm Parabellum, 115 grain FMJ from a service-length barrel: the most
+  // common handgun round, and the one with the best-published exterior
+  // ballistics to check the model against.
+  pistol: {
+    ptype: "ball",
+    speed: 360,        // m/s = 1181 ft/s, typical 115 gr factory load, 4-5 in barrel
+    angle: 45,         // the classic maximum-range angle, so the default shot
+                       // shows an arc rather than a 100 m flat line
+    relH: 1.5,         // m AGL, standing shooter's sight line
+    dt: 0.0005,        // s; 0.36 m of travel per ms at the muzzle, so half a ms
+                       // keeps the first, steepest part of the drag curve honest
+    drag: true,
+    timeSpeed: 1,
+    mMass: 7.45,       // g = 115 grains
+    mDiam: 9.01,       // mm, bullet diameter (the "9" is the bore, not the bullet)
+    dragModel: "g1",   // flat-base pistol bullet: the G1 reference curve
+    bc: 0.14,          // published G1 ballistic coefficient for 115 gr 9 mm FMJ.
+                       // Gives form factor i = 0.93, so Cd runs from about 0.50
+                       // at the muzzle (Mach 1.06, in the transonic peak) down
+                       // to 0.29 by 100 yards, averaging near the 0.39 that a
+                       // fixed-Cd fit needed: the curve now does that for free
+                       // and stays right as the bullet slows.
+    mCd: 0.39,         // fallback if the drag model is switched to fixed
+    mRpm: 0,           // spin is about the LONG axis (gyroscopic stabilisation),
+    mCl: 0,            // so it produces no Magnus lift in this model, unlike a
+                       // baseball's backspin
+  },
+  // .50 BMG, M33 ball: the long-range benchmark, and the case the drag curve
+  // was really built for. 661 gr at 2,910 fps from an M2's 45 in barrel (a
+  // Barrett rifle chronographs nearer 2,750-2,800). Leaves the muzzle at about
+  // Mach 2.6 and stays supersonic for roughly the first kilometre, so a fixed
+  // Cd would be badly wrong across the flight in a way the G1 curve is not.
+  fifty: {
+    ptype: "ball",
+    speed: 887,        // m/s = 2,910 fps
+    angle: 45,
+    relH: 1.5,
+    dt: 0.0005,        // 0.44 m of travel per step at the muzzle
+    drag: true,
+    timeSpeed: 1,
+    mMass: 42.83,      // g = 661 grains
+    mDiam: 12.95,      // mm = 0.510 in
+    dragModel: "g1",
+    bc: 0.62,          // published G1 BC for M33 ball. G7 suits a boat-tail
+                       // better in principle, but no G7 figure for this round
+                       // was sourceable, and an unsourced one would be worse
+                       // than a matched-to-data G1. Form factor works out 0.59.
+    mCd: 0.31,         // fallback only, roughly the muzzle value
+    mRpm: 0,           // spin is gyroscopic, about the long axis: no Magnus
+    mCl: 0,
+  },
+  // Yamato's 46 cm (18.1 in) Type 94: the largest naval gun ever mounted on a
+  // warship and fired in action. Type 91 armour-piercing shell, 1,460 kg, at
+  // 780 m/s, published maximum range 42.0 km at 45 degrees.
+  yamato: {
+    ptype: "ball",
+    speed: 780,        // m/s
+    angle: 45,         // the elevation that gives the published maximum range
+    relH: 20,          // m, roughly the height of the main battery over the water
+    dt: 0.005,         // ~4 m per step; the flight lasts a minute and a half
+    drag: true,
+    timeSpeed: 1,
+    mMass: 1460000,    // g = 1,460 kg
+    mDiam: 460,        // mm
+    dragModel: "g7",   // boat-tail reference shape, the closest of the two to a
+                       // streamlined APC shell
+    bc: 11.29,         // CALIBRATED, not published: no G1/G7 coefficient exists
+                       // for a 1940s naval shell, so the coefficient was solved
+                       // for by bisection until the model reproduced the
+                       // published 42.0 km at 45 deg. The check that this is
+                       // physical rather than a curve fit: flight time then came
+                       // out at 99.5 s against the ~98 s on the historical range
+                       // tables, and time of flight was NOT fitted.
+    mCd: 0.25,         // fallback only
+    mRpm: 0,           // spin-stabilised about the long axis: no Magnus term
+    mCl: 0,
+  },
+  // Falcon 9 Block 5, a standard LEO ascent. Unlike everything else here this
+  // is POWERED flight, so it has no launch angle: the vehicle holds vertical
+  // off the pad, pitches over a few degrees toward its azimuth, and then flies
+  // a gravity turn, following its own velocity vector all the way to orbit.
+  // Location and heading are fixed by the preset too, because a launch site and
+  // an azimuth are not free choices: this is pad 39A at Kennedy on a 45 degree
+  // north-easterly, the standard track for a 51.6 degree station orbit.
+  // Masses and engine numbers are the published Block 5 figures; the ONE fitted
+  // number is the pitch-kick angle, calibrated so the model reproduces the
+  // published MECO and SECO conditions.
+  falcon9: {
+    ptype: "rocket",
+    aimless: true,                    // no heading or angle stage: the pad and
+                                      // the azimuth are part of the mission
+    speed: 0, angle: 90, relH: 0,     // unused: thrust and the pitch program fly it
+    dt: 0.05,
+    drag: true,
+    timeSpeed: 1,
+    site: { lat: 28.6084, lon: -80.6043, name: "LC-39A, Kennedy Space Center" },
+    azimuth: 45,                      // deg, north-east, the ISS-inclination track
+    area: 21.2,                       // m^2, the 5.2 m core cross section
+    payload: 13000,                   // kg, a Starlink-class LEO stack
+    fairing: 1750,                    // kg, both halves
+    fairingT: 200,                    // s, jettison once the air is thin
+    sepDelay: 4,                      // s, MECO to second-stage ignition
+    qStart: 45, qEnd: 80, qThrottle: 0.75,   // throttle bucket through max Q
+    gLimit: 3.5,                      // g, structural cap late in the first burn
+    vertUntil: 8,                     // s of vertical rise off the pad
+    kickUntil: 22,                    // s, end of the pitch-over manoeuvre
+    kickDeg: 3.3,                     // FITTED: the one number that shapes the arc
+    targetAlt: 200000,                // m, the insertion altitude guidance flies to
+    guideTau: 25,                     // s, how briskly it corrects climb rate
+    // Published Block 5 masses vary by source; this is the higher, more commonly
+    // cited propellant set, which is also the one whose delta-v budget actually
+    // closes (about 9.8 km/s ideal against the roughly 9.4 km/s an orbit needs
+    // once losses are paid). The lower set circulating for the second stage
+    // leaves the vehicle 1.4 km/s short of orbital speed, which is how I found
+    // out it was wrong: the ascent flew a perfectly good profile and simply
+    // could not finish.
+    r1: { thrSL: 7607000, thrVac: 8227000, isp: 300, prop: 411000, dry: 22200,
+          reserve: 25000 },           // kg held back for boostback and landing:
+                                      // this is why a real MECO is slower and
+                                      // earlier than a propellant-exhausted one
+    r2: { thrSL: 981000, thrVac: 981000, isp: 348, prop: 107500, dry: 4000 },
+  },
+  // Pascal-B, 27 August 1957: a nuclear test shaft capped with a steel plate,
+  // which the blast fired straight up. The camera ran at one frame per
+  // millisecond and caught the cap in a single frame, which puts it at 66 km/s
+  // or more, about six times Earth escape velocity. Robert Brownlee, who ran
+  // the test and did the sums, always said it never reached space and almost
+  // certainly burned up.
+  // READ THE HONESTY NOTE: at 66 km/s this is Mach 194, roughly forty times
+  // beyond the fastest point in any drag table here, and far outside anything
+  // this simulator can claim. There is no ablation, no melting, no real-gas
+  // chemistry and no shock-layer radiation in the model, all of which dominate
+  // the real event. What the run below gets RIGHT is the qualitative answer,
+  // that the atmosphere stops it almost immediately. The numbers are a
+  // demonstration, not a prediction.
+  manhole: {
+    ptype: "ball",
+    speed: 66000,      // m/s, the single-frame lower bound
+    angle: 90,         // straight up, out of a vertical shaft
+    relH: 0.5,
+    dt: 0.0002,        // 13 m per step; the drag length scale is under a km
+    drag: true,
+    timeSpeed: 1,
+    mMass: 900000,     // g = 900 kg, a four-inch steel cap
+    mDiam: 1200,       // mm
+    dragModel: "fixed",// the G1/G7 curves are small-arms shapes and stop at
+                       // Mach 5; using them here would be meaningless
+    mCd: 1.5,          // blunt flat disc in the hypersonic limit, an estimate
+    mRpm: 0,
+    mCl: 0,
+  },
+};
+// Fields the presets manage; editing any of them marks the preset "modified".
+const PRESET_FIELDS = ["ptype","speed","angle","relH","dt","drag",
+  "bDiam","bLatex","bCd","bStretch","bBurstAlt","bScrapCd","bScrapArea",
+  "mMass","mDiam","mCd","mRpm","mCl"];
+const FIELD_IDS = { ptype:"ptype", speed:"speed", angle:"angle", relH:"relH", dt:"dtStep",
+  drag:"dragToggle", bDiam:"bDiam", bLatex:"bLatex", bCd:"bCd", bStretch:"bStretch",
+  bBurstAlt:"bBurstAlt", bScrapCd:"bScrapCd", bScrapArea:"bScrapArea",
+  mMass:"mMass", mDiam:"mDiam", mCd:"mCd", mRpm:"mRpm", mCl:"mCl" };
+
+const $ = id => document.getElementById(id);
+
+/* ---------- ISA atmosphere ---------- */
+// Three-layer international standard atmosphere, the usual 32 km model:
+//   0-11 km:  T = 288.15 K - 6.5 K/km, polytropic pressure
+//   11-20 km: isothermal 216.65 K, exponential pressure
+//   20-32 km: T rises 1 K/km, polytropic again
+const G_ISA = 9.80665;    // standard gravity the ISA tables are defined with
+const P11 = 101325 * Math.pow(216.65/288.15, G_ISA/(R_AIR*0.0065));   // 22632 Pa
+const P20 = P11 * Math.exp(-G_ISA*9000/(R_AIR*216.65));               // 5474.9 Pa
+const ISA32 = (() => {   // values at the 32 km model top, for the tail below
+  const T = 216.65 + 0.001*12000;
+  return { T, p: P20 * Math.pow(T/216.65, -G_ISA/(R_AIR*0.001)) };
+})();
+// ---------- Mach-dependent drag ----------
+// A single fixed Cd is wrong for anything that goes near the speed of sound:
+// a bullet's drag coefficient roughly triples through the transonic band and
+// then falls again. These are the standard G1 (flat-base) and G7 (boat-tail)
+// reference drag functions, Cd against Mach, as tabulated in the ballistics
+// literature; a projectile is described by which curve it follows plus a
+// ballistic coefficient, and the form factor scales the curve to it:
+//     i = (m/d^2) / BC        (m in lb, d in inches, the BC's own units)
+//     Cd(M) = i * Cd_table(M)
+// so the curve's SHAPE comes from the reference projectile and its HEIGHT from
+// the real one. Checked against the published anchors: G1 is 0.2629 at rest,
+// dips to 0.2020 near Mach 0.55, peaks at 0.6625 at Mach 1.4, 0.5133 at Mach 3.
+const DRAG_TABLES = {
+  g1: [[0,0.2629],[0.05,0.2558],[0.1,0.2487],[0.15,0.2413],[0.2,0.2344],[0.25,0.2278],[0.3,0.2214],[0.35,0.2155],[0.4,0.2104],[0.45,0.2061],[0.5,0.2032],[0.55,0.202],[0.6,0.2034],[0.7,0.2165],[0.75,0.2313],[0.8,0.2546],[0.85,0.2901],[0.9,0.3415],[0.95,0.4084],[1,0.4805],[1.05,0.5427],[1.1,0.5883],[1.15,0.6191],[1.2,0.6393],[1.25,0.6518],[1.3,0.6589],[1.35,0.6621],[1.4,0.6625],[1.45,0.6607],[1.5,0.6573],[1.75,0.628],[2,0.5934],[2.25,0.563],[2.5,0.5397],[3,0.5133],[3.5,0.504],[4,0.5006],[5,0.4988]],
+  g7: [[0,0.1198],[0.05,0.1197],[0.1,0.1196],[0.15,0.1194],[0.2,0.1193],[0.25,0.1194],[0.3,0.1194],[0.35,0.1193],[0.4,0.1193],[0.45,0.1193],[0.5,0.1194],[0.55,0.1193],[0.6,0.1194],[0.65,0.1197],[0.7,0.1202],[0.75,0.1215],[0.8,0.1226],[0.85,0.1242],[0.875,0.1266],[0.9,0.1306],[0.925,0.1368],[0.95,0.1464],[0.975,0.166],[1,0.2054],[1.025,0.2993],[1.05,0.3803],[1.075,0.4015],[1.1,0.4043],[1.15,0.4034],[1.2,0.4014],[1.3,0.3955],[1.4,0.3884],[1.5,0.381],[1.75,0.3612],[2,0.3376],[2.25,0.3151],[2.5,0.2969],[3,0.298],[4,0.2687],[5,0.2404]],
+};
+function cdFromTable(name, mach) {
+  const t = DRAG_TABLES[name];
+  if (!t) return null;
+  if (mach <= t[0][0]) return t[0][1];
+  if (mach >= t[t.length-1][0]) return t[t.length-1][1];
+  let lo = 0, hi = t.length - 1;                     // binary search, linear interp
+  while (hi - lo > 1) { const mid = (lo+hi) >> 1; if (t[mid][0] <= mach) lo = mid; else hi = mid; }
+  const f = (mach - t[lo][0]) / (t[hi][0] - t[lo][0]);
+  return t[lo][1] + f*(t[hi][1] - t[lo][1]);
+}
+// form factor from a ballistic coefficient: mass in grams, diameter in mm
+function formFactor(bc, massG, diamMm) {
+  const lb = massG/453.59237, inch = diamMm/25.4;
+  return (lb/(inch*inch))/bc;
+}
+const SOUND = T => Math.sqrt(1.4*R_AIR*T);           // m/s in dry air at T kelvin
+
+let airProfile = null;   // real p/T/rho from the forecast; null = fall back to ISA
+// Atmosphere at height h: the forecast profile where it reaches, the standard
+// atmosphere above it. Between profile levels, T and rho are interpolated in
+// log-pressure-ish fashion (linear in height is fine over a 1-2 km spacing);
+// above the top level the ISA shape is kept but scaled to match the profile's
+// last point, so there is no step at the handover.
+function atmAt(h) {
+  const P = airProfile;
+  if (!P || h <= P[0].h - 500) return isa(h);
+  const top = P[P.length-1];
+  if (h >= top.h) {
+    const ref = isa(top.h), st = isa(h);
+    const k = top.rho / ref.rho;                 // scale factor, held constant above
+    return { T: st.T * (top.T/ref.T), p: st.p * k, rho: st.rho * k };
+  }
+  if (h <= P[0].h) return { T: P[0].T, p: P[0].p, rho: P[0].rho };
+  let lo = 0;
+  while (lo < P.length-2 && P[lo+1].h < h) lo++;
+  const a = P[lo], b = P[lo+1], f = (h - a.h)/(b.h - a.h);
+  return { T: a.T + f*(b.T - a.T), p: a.p + f*(b.p - a.p), rho: a.rho + f*(b.rho - a.rho) };
+}
+
+function isa(h) {
+  h = Math.max(h, -400);
+  let T, p;
+  if (h <= 11000) {
+    T = 288.15 - 0.0065*h;
+    p = 101325 * Math.pow(T/288.15, G_ISA/(R_AIR*0.0065));
+  } else if (h <= 20000) {
+    T = 216.65;
+    p = P11 * Math.exp(-G_ISA*(h-11000)/(R_AIR*T));
+  } else if (h <= 32000) {
+    T = 216.65 + 0.001*(h-20000);
+    p = P20 * Math.pow(T/216.65, -G_ISA/(R_AIR*0.001));
+  } else {
+    // above the 32 km ISA layer this is no longer a weather model: decay
+    // pressure on a 7 km scale height toward vacuum, so that future
+    // orbital-class presets see essentially zero drag instead of a clamp
+    T = ISA32.T;
+    p = ISA32.p * Math.exp(-(h-32000)/7000);
+  }
+  return { T, p, rho: p/(R_AIR*T) };
+}
+
+/* ---------- spherical helpers ---------- */
+const V3 = {
+  add: (a, b) => [a[0]+b[0], a[1]+b[1], a[2]+b[2]],
+  sub: (a, b) => [a[0]-b[0], a[1]-b[1], a[2]-b[2]],
+  scale: (a, k) => [a[0]*k, a[1]*k, a[2]*k],
+  dot: (a, b) => a[0]*b[0] + a[1]*b[1] + a[2]*b[2],
+  cross: (a, b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]],
+  norm: a => Math.hypot(a[0], a[1], a[2]),
+  unit: a => { const n = Math.hypot(a[0], a[1], a[2]) || 1; return [a[0]/n, a[1]/n, a[2]/n]; },
+};
+function llToR(latDeg, lonDeg, h) {
+  const la = latDeg*Math.PI/180, lo = lonDeg*Math.PI/180, r = R_EARTH + h;
+  return [r*Math.cos(la)*Math.cos(lo), r*Math.cos(la)*Math.sin(lo), r*Math.sin(la)];
+}
+function rToLLA(r) {
+  const n = V3.norm(r);
+  return { lat: Math.asin(r[2]/n)*180/Math.PI, lon: Math.atan2(r[1], r[0])*180/Math.PI,
+           h: n - R_EARTH };
+}
+// local East-North-Up unit vectors at a position
+function enuAt(r) {
+  const up = V3.unit(r);
+  const east = V3.unit([-up[1], up[0], 0]);   // z_hat x up
+  const north = V3.cross(up, east);
+  return { east, north, up };
+}
+function bearingDeg(lat1, lon1, lat2, lon2) {   // initial great-circle bearing
+  const f1 = lat1*Math.PI/180, f2 = lat2*Math.PI/180, dl = (lon2-lon1)*Math.PI/180;
+  const y = Math.sin(dl)*Math.cos(f2);
+  const x = Math.cos(f1)*Math.sin(f2) - Math.sin(f1)*Math.cos(f2)*Math.cos(dl);
+  return (Math.atan2(y, x)*180/Math.PI + 360) % 360;
+}
+function destPoint(lat, lon, brgDeg, dist) {    // great-circle destination
+  const f = lat*Math.PI/180, l = lon*Math.PI/180, b = brgDeg*Math.PI/180, d = dist/R_EARTH;
+  const f2 = Math.asin(Math.sin(f)*Math.cos(d) + Math.cos(f)*Math.sin(d)*Math.cos(b));
+  const l2 = l + Math.atan2(Math.sin(b)*Math.sin(d)*Math.cos(f),
+                            Math.cos(d) - Math.sin(f)*Math.sin(f2));
+  return [l2*180/Math.PI, f2*180/Math.PI];      // [lon, lat] for GeoJSON
+}
+function surfDist(lat1, lon1, lat2, lon2) {     // haversine, m
+  const f1 = lat1*Math.PI/180, f2 = lat2*Math.PI/180;
+  const df = f2-f1, dl = (lon2-lon1)*Math.PI/180;
+  const a = Math.sin(df/2)**2 + Math.cos(f1)*Math.cos(f2)*Math.sin(dl/2)**2;
+  return 2*R_EARTH*Math.asin(Math.sqrt(a));
+}
+// a flat arrow at a fixed height: shaft plus two barbs, as three polylines
+// of [lat, lon, hMSL] ready for the line renderer
+function arrowPolys(lat, lon, brg, dist, h) {
+  const tip = destPoint(lat, lon, brg, dist);
+  const barbL = destPoint(tip[1], tip[0], (brg + 210) % 360, dist*0.25);
+  const barbR = destPoint(tip[1], tip[0], (brg + 150) % 360, dist*0.25);
+  return [[[lat, lon, h], [tip[1], tip[0], h]],
+          [[barbL[1], barbL[0], h], [tip[1], tip[0], h]],
+          [[barbR[1], barbR[0], h], [tip[1], tip[0], h]]];
+}
+
+/* ---------- wind ---------- */
+// Wind vector (u east, v north, m/s) as a function of altitude MSL.
+// Manual mode: uniform. Current mode: linear interpolation through the
+// fetched profile (10 m wind plus pressure-level winds at their geopotential
+// heights, which are heights above mean sea level). Clamped at the ends.
+let airNote = "";
+let windProfile = null;     // [{h, u, v, speed, dir, label}] sorted by h
+let windProfileMeta = null; // {lat, lon, timeISO, fetchedAt}
+
+function windAt(h) {
+  if ($("windManual").checked || !windProfile || !windProfile.length) {
+    const s = +$("windSpeed").value || 0, d = (+$("windDir").value || 0) * Math.PI/180;
+    return { u: -s*Math.sin(d), v: -s*Math.cos(d) };   // met convention: "from"
+  }
+  const p = windProfile;
+  if (h <= p[0].h) return p[0];
+  if (h >= p[p.length-1].h) return p[p.length-1];
+  for (let i = 1; i < p.length; i++) {
+    if (h <= p[i].h) {
+      const f = (h - p[i-1].h) / (p[i].h - p[i-1].h);
+      return { u: p[i-1].u + f*(p[i].u - p[i-1].u), v: p[i-1].v + f*(p[i].v - p[i-1].v) };
+    }
+  }
+  return p[p.length-1];
+}
+
+async function fetchJson(url) {
+  try { const r = await fetch(url); if (!r.ok) throw 0; return await r.json(); }
+  catch (e) {
+    // The dev server offers a proxy for the case where a direct call is
+    // blocked; a static host has none, so there the failure propagates and
+    // the caller falls back (wind reverts to the manual vector).
+    const dev = location.hostname === "127.0.0.1" || location.hostname === "localhost";
+    if (!dev) throw e;
+    const r = await fetch("/api/proxy?url=" + encodeURIComponent(url));
+    return await r.json();
+  }
+}
+
+const WIND_LEVELS = [1000, 925, 850, 700, 500, 400, 300, 250, 200];  // hPa
+async function fetchWindProfile(lat, lon) {
+  $("windStatus").textContent = "fetching...";
+  const vars = ["wind_speed_10m","wind_direction_10m",
+                "temperature_2m","relative_humidity_2m","surface_pressure"];
+  for (const l of WIND_LEVELS)
+    vars.push(`wind_speed_${l}hPa`, `wind_direction_${l}hPa`, `geopotential_height_${l}hPa`,
+              `temperature_${l}hPa`, `relative_humidity_${l}hPa`);
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}` +
+    `&longitude=${lon.toFixed(4)}&hourly=${vars.join(",")}&wind_speed_unit=ms` +
+    `&timezone=auto&forecast_days=2`;
+  const j = await fetchJson(url);
+  // pick the hour containing "now" in the station's own timezone
+  const nowMs = Date.now() + (j.utc_offset_seconds*1000);
+  let idx = 0;
+  j.hourly.time.forEach((t, i) => { if (Date.parse(t + "Z") <= nowMs) idx = i; });
+  const groundH = launch.groundElev ?? j.elevation ?? 0;
+  const prof = [];
+  const push = (h, s, d, label) => {
+    const dr = d * Math.PI/180;
+    prof.push({ h, u: -s*Math.sin(dr), v: -s*Math.cos(dr), speed: s, dir: d, label });
+  };
+  push(groundH + 10, j.hourly.wind_speed_10m[idx], j.hourly.wind_direction_10m[idx], "10 m");
+  // Real atmosphere, from the same forecast hour: pressure levels give p, T and
+  // humidity directly, so density comes from the gas law with the vapour
+  // correction instead of the standard atmosphere. On a hot humid day the
+  // standard model can be several percent out on density, and drag is linear
+  // in it. Air with water vapour in it is LIGHTER than dry air, because a water
+  // molecule (18) is lighter than the N2/O2 average (29).
+  const airProf = [];
+  const pushAir = (h, tC, rh, pPa) => {
+    if (h == null || tC == null || pPa == null) return;
+    const T = tC + 273.15;
+    const es = 611.2 * Math.exp(17.67*tC/(tC + 243.5));      // Bolton, saturation vapour pressure
+    const pv = Math.max(0, Math.min((rh ?? 0)/100, 1)) * es;
+    airProf.push({ h, T, p: pPa, rho: (pPa - pv)/(R_AIR*T) + pv/(461.495*T) });
+  };
+  pushAir(groundH + 2, j.hourly.temperature_2m[idx], j.hourly.relative_humidity_2m[idx],
+          (j.hourly.surface_pressure[idx] ?? 0) * 100);
+  for (const l of WIND_LEVELS)
+    pushAir(j.hourly[`geopotential_height_${l}hPa`][idx], j.hourly[`temperature_${l}hPa`][idx],
+            j.hourly[`relative_humidity_${l}hPa`][idx], l*100);
+  airProf.sort((a, b) => a.h - b.h);
+  airProfile = airProf.length >= 2 ? airProf : null;
+  if (airProfile) {
+    const g = airProfile[0], st = isa(g.h);
+    airNote = `real air: ${(g.T-273.15).toFixed(1)} C, rho ${g.rho.toFixed(3)} ` +
+              `(ISA ${st.rho.toFixed(3)}, ${((g.rho/st.rho-1)*100).toFixed(1)}%)`;
+  } else airNote = "";
+  for (const l of WIND_LEVELS) {
+    const h = j.hourly[`geopotential_height_${l}hPa`][idx];
+    if (h == null || h < groundH + 20) continue;   // level underground here
+    push(h, j.hourly[`wind_speed_${l}hPa`][idx], j.hourly[`wind_direction_${l}hPa`][idx], l + " hPa");
+  }
+  prof.sort((a, b) => a.h - b.h);
+  windProfile = prof;
+  windProfileMeta = { lat, lon, timeISO: j.hourly.time[idx], fetchedAt: Date.now() };
+  $("windStatus").textContent = "profile for " + j.hourly.time[idx].replace("T", " ")
+                                + (airNote ? " | " + airNote : "");
+  $("windTable").innerHTML = "<tr><th>level</th><th>m MSL</th><th>m/s</th><th>from</th></tr>" +
+    prof.map(e => `<tr><td>${e.label}</td><td>${Math.round(e.h)}</td>` +
+      `<td>${e.speed.toFixed(1)}</td><td>${Math.round(e.dir)}&deg;</td></tr>`).join("");
+}
+
+// refetch if there is no profile, it is over an hour old, or the launch
+// point moved more than ~20 km from where it was sampled
+function windProfileStale(lat, lon) {
+  if (!windProfileMeta) return true;
+  if (Date.now() - windProfileMeta.fetchedAt > 3600e3) return true;
+  return surfDist(lat, lon, windProfileMeta.lat, windProfileMeta.lon) > 20000;
+}
+
+/* ---------- terrain elevation ---------- */
+// Terrarium elevation tiles (Mapzen/AWS, ~38 m at z12), decoded locally by
+// the renderer and shared by graphics and physics: the same heightfield the
+// tiles are drawn with answers terrainAt(), so the landing check and the
+// picture cannot disagree. Replaces the old Open-Meteo point-elevation API
+// and its 1.2 s politeness queue: lookups are now synchronous once a tile is
+// resident, and ensureTerrain() resolves when coverage arrives.
+function terrainAt(la, lo) { return globe.terrainAt(la, lo); }
+function fetchElevBatch(points) { return globe.ensureTerrain(points); }
+// inert compatibility gates (the old API queue needed them; local tiles don't)
+let elevBusy = false, lastElevFetch = 0;
+
+/* ---------- the renderer: own WebGL2 globe (globe.js) ---------- */
+// ECEF camera + terrain-displaced OSM tiles on the same R_EARTH sphere the
+// physics integrates over. No map-centre concept, no zoom, no datum split:
+// everything drawn takes [lat, lon, height above MSL].
+const glc = document.getElementById("glc");
+const globe = new Globe(glc);
+
+/* ---------- overlay lines facade ---------- */
+// Same call sites as the old MapLibre custom layer, now backed directly by
+// the renderer. Polylines take [lat, lon, altMSL]: real altitudes on real
+// terrain, so the launch-ground datum conversions are gone. tagPoint holds
+// the object's world position; tick() projects it for the DOM label/disc.
+const line3d = {
+  ok: true, tagPoint: null, tagScreen: null,
+  setLines: (name, polys, color, width) => globe.setLines(name, polys, color, width),
+  clear: name => globe.clearLines(name),
+};
+const mapReady = true;
+
+function mkEl(cls, inner) { const d = document.createElement("div"); d.className = cls;
+  if (inner) d.innerHTML = inner; return d; }
+// a DOM marker positioned by the renderer at [lat, lon, hMSL]; hidden
+// automatically when its point is behind the camera or off screen
+function mkMarker(cls, inner) {
+  const el = mkEl("gmk" + (cls ? " " + cls : ""), inner);
+  document.body.appendChild(el);
+  return globe.addMarker(el);
+}
+const LAND_SVG = '<svg width="20" height="20" viewBox="0 0 20 20">' +
+  '<path d="M3 3 L17 17 M17 3 L3 17" stroke="#e53e3e" stroke-width="4" stroke-linecap="round"/></svg>';
+
+/* ---------- free-fly camera, nettlecombe scheme ---------- */
+// First-person camera: lat/lon/alt plus yaw (compass) and pitch (degrees
+// above the horizon, -90 straight down). The renderer reads this object
+// directly every frame; there is no map-centre or zoom to derive. The
+// control feel replicates the viewer at rrw.ai/nettlecombe (key handling
+// read from the live page):
+//   W/S fly along the FULL 3D look vector (pitched down = descend),
+//   A/D strafe horizontally, Space/Shift go straight up/down, T pauses,
+//   Alt held or a double-tapped W (within 300 ms, latched until W is
+//   released) sprints, mouse look at 0.0022 rad per pixel with pitch
+//   clamped to +-1.553 rad, and velocity integrates as
+//   vel += wish_hat * ACCEL*dt, vel *= DRAG^dt, capped at WALK or SPRINT.
+// On top of that base scheme, everything scales with height above ground, and
+// the ramp is SUPERLINEAR: v ~ AGL x (AGL/knee)^0.3 above a 50 m knee, plain
+// linear below it. A purely linear ramp holds the ground at a constant angular
+// rate, which sounds right and feels sluggish once you are high enough to be
+// crossing real distance rather than looking at a scene: the things you want to
+// reach (a 50 km balloon track, the far side of the lake) grow faster than the
+// view does. Street level is untouched, 1 km up is about twice as fast, 10 km
+// up about five times. Esc releases the pointer
+// (menu mode, cursor operates the panel); clicking the map recaptures it,
+// and the capturing click never advances the launch ladder.
+// Default spawn for the public release, chosen by RW in flight on
+// 2026-08-16 22:52 EDT with a since-removed recorder key (its raw
+// recordings are kept in spawns.jsonl as provenance): a kilometre over
+// Chelsea looking north-northwest across South Kensington toward Hyde
+// Park, Imperial College in frame.
+const SPAWN = { lat: 51.4895061, lon: -0.1709896, alt: 1038.7, yaw: 341.4, pitch: -31.1 };
+const cam = globe.cam;    // one object: the renderer reads it every frame
+Object.assign(cam, SPAWN);
+const WALK = 11, SPRINT = 26, ACCEL = 90, CAMDRAG = 0.0016;   // nettlecombe constants
+// altitude ramp, see moveCamera. CURV retuned 0.24 -> 0.17 and the cap
+// raised 1e6 -> 5e6 (RW: mid tens of km too fast, above that too slow and
+// pinned at the old 1000 km/s ceiling from ~80 km up). Measured table now:
+// 5 km -> 5.8 km/s, 10 -> 16, 20 -> 49, 30 -> 104, 50 -> 291, 100 -> 1349,
+// cap 5000 km/s reached ~180 km.
+const SPD_KNEE = 2000, SPD_CURV = 0.17, SPD_MAX = 5e6;
+const LOOK_SENS = 0.0022 * 180/Math.PI;   // deg per px, same 0.0022 rad
+const PITCH_LIM = 1.553 * 180/Math.PI;    // 88.97 deg
+const camVel = [0, 0, 0];                 // ENU m/s
+const keys = new Set();
+let locked = false, speedMult = 1, camFetchPos = [HOME.lat, HOME.lon];
+let sprintLatch = false, lastW = 0;
+
+const canvas = () => glc;
+function camGround() { return terrainAt(cam.lat, cam.lon) ?? launch.groundElev ?? 0; }
+
+// Launch-vehicle drag: a slender cylinder, low subsonic, a transonic hump near
+// Mach 1.2, falling away supersonic. Referenced to the 5.2 m core cross section.
+// Coarser than the G1/G7 tables and it does not need to be finer: above about
+// 60 km, where the profile spends most of its energy, dynamic pressure is tiny.
+function machCd(m) {
+  const T = [[0,0.28],[0.6,0.30],[0.9,0.42],[1.2,0.62],[1.5,0.55],[2,0.42],[3,0.30],[5,0.24],[8,0.21]];
+  if (m <= T[0][0]) return T[0][1];
+  if (m >= T[T.length-1][0]) return T[T.length-1][1];
+  let i = 0; while (T[i+1][0] < m) i++;
+  const f = (m - T[i][0])/(T[i+1][0] - T[i][0]);
+  return T[i][1] + f*(T[i+1][1] - T[i][1]);
+}
+// Commanded thrust direction: straight up, then a pitch kick toward the launch
+// azimuth, then prograde (gravity turn). The kick angle is the one number that
+// shapes the whole ascent, and it is calibrated against the published MECO and
+// SECO conditions rather than guessed.
+function thrustDir(s, r, v, p) {
+  const { up, east, north } = enuAt(r);
+  const az = s.azim*Math.PI/180;
+  const down = V3.add(V3.scale(east, Math.sin(az)), V3.scale(north, Math.cos(az)));
+  if (s.t < p.vertUntil) return up;                       // hold vertical off the pad
+  if (s.t < p.kickUntil) {                                // rotate into the kick
+    const f = (s.t - p.vertUntil)/(p.kickUntil - p.vertUntil);
+    const a = f*p.kickDeg*Math.PI/180;
+    return V3.unit(V3.add(V3.scale(up, Math.cos(a)), V3.scale(down, Math.sin(a))));
+  }
+  if (s.stage === 2) {
+    // CLOSED-LOOP guidance, which is what a real upper stage flies. An open-loop
+    // pitch schedule was tried first and was badly wrong: it held the climb from
+    // a 47 degree flight path angle at ignition, reached 256 km, and burned
+    // 2,094 m/s in gravity losses while barely accelerating. Instead, command
+    // only as much vertical thrust as is needed to fly the target altitude, and
+    // put everything else into horizontal speed:
+    //   vertical demand = (wanted climb rate - current) / tau
+    //                     + local gravity - centrifugal relief
+    // The centrifugal term is what makes an orbit an orbit: as horizontal speed
+    // approaches sqrt(GM/r) the vertical demand falls to zero on its own, the
+    // pitch goes flat, and the vehicle stops fighting gravity at all.
+    const rn2 = V3.norm(r), h = rn2 - R_EARTH - s.ground0;
+    const vUp = V3.dot(v, up);
+    const vH = Math.sqrt(Math.max(0, V3.dot(v, v) - vUp*vUp));
+    // Null the wanted climb as speed approaches orbital, so cutoff happens
+    // at flight path angle ~0. Cutting off while still climbing put the
+    // vehicle at the PERIGEE of its ellipse with the far side at 8 km, and
+    // a prograde burn at perigee raises only the apogee, so no amount of
+    // further burning could fix it (measured: burned to depletion at
+    // 1,500 km altitude with the perigee still in the atmosphere).
+    const orbFrac = Math.min(1, vH*vH*rn2/GM);   // (vH/vCirc)^2
+    const climbWant = Math.max(-40, Math.min(180, 0.06*(p.targetAlt - h))) * (1 - orbFrac);
+    // the endgame needs a crisper hand than the ascent: residual climb at
+    // cutoff is what buries the perigee, so the time constant tightens as
+    // speed approaches orbital
+    const tauEff = p.guideTau * (1 - 0.7*orbFrac);
+    const need = (climbWant - vUp)/tauEff + GM/(rn2*rn2) - vH*vH/rn2;
+    const acc = Math.max(1, s._thr/s.mass);
+    // Only a little downward authority: pushing hard against an existing climb
+    // just burns the energy the first stage paid for. Better to coast up and
+    // convert later.
+    const sinp = Math.max(-0.2, Math.min(0.85, need/acc));
+    const cosp = Math.sqrt(Math.max(0, 1 - sinp*sinp));
+    return V3.unit(V3.add(V3.scale(down, cosp), V3.scale(up, sinp)));
+  }
+  const sp = V3.norm(v);
+  if (sp < 1) return up;
+  return V3.scale(v, 1/sp);                               // gravity turn: follow v
+}
+function moveCamera(dt) {
+  if ($("followToggle").checked && simStatus === "flying" && sim) { chaseCamera(); return; }
+  const agl = Math.max(cam.alt - camGround(), 0);
+  // Altitude ramp. A fixed power law cannot do what is wanted here, because the
+  // complaint is shaped differently at each end: linear near the ground, gentler
+  // through the middle, much steeper up high. So the EXPONENT itself grows with
+  // altitude: log v = log AGL + c(log(AGL/knee))^2, a parabola in log-log space.
+  // Below the knee it is exactly linear, and the curve steepens smoothly from
+  // there with no kink, which a piecewise ramp would give.
+  const u = Math.max(0, Math.log(agl/SPD_KNEE));
+  const scale = Math.min(Math.max(agl*Math.exp(SPD_CURV*u*u), 4), SPD_MAX) / WALK * speedMult;
+  // VERTICAL gets its own, gentler ramp: plain linear, the original "one second
+  // to the ground" rule. Near the ground it therefore matches horizontal
+  // exactly; higher up it falls further behind, because horizontal wants to
+  // cross real distance while vertical only ever needs to change altitude, and
+  // an altitude-proportional climb rate holds the useful invariant that every
+  // second multiplies your height by e. Without this, a 45 degree dive from
+  // 30 km would descend at 200 km/s and pass through the whole atmosphere in an
+  // eyeblink. Consequence, deliberate: at altitude W no longer follows the look
+  // vector exactly, flying a shallower path than you are aiming.
+  const scaleV = Math.min(Math.max(agl, 4), SPD_MAX) / WALK * speedMult;
+  const yawR = cam.yaw*Math.PI/180, pitR = cam.pitch*Math.PI/180;
+  const cp = Math.cos(pitR);
+  const fwd = [Math.sin(yawR)*cp, Math.cos(yawR)*cp, Math.sin(pitR)];   // full look vector
+  const right = V3.unit([fwd[1], -fwd[0], 0]);                          // horizontal strafe
+  const ax = (keys.has("KeyW")?1:0) - (keys.has("KeyS")?1:0);
+  const ay = (keys.has("KeyD")?1:0) - (keys.has("KeyA")?1:0);
+  // Space climbs straight up (nettlecombe scheme), Shift descends; pause is T
+  const az = (keys.has("Space")?1:0) - ((keys.has("ShiftLeft")||keys.has("ShiftRight"))?1:0);
+  const wish = V3.add(V3.add(V3.scale(fwd, ax), V3.scale(right, ay)), [0, 0, az]);
+  const sprint = sprintLatch || keys.has("AltLeft") || keys.has("AltRight");
+  const mag = Math.min(1, V3.norm(wish));
+  if (mag > 0.02) {
+    const w = V3.unit(wish), a = ACCEL*dt*mag;    // horizontal and vertical
+    camVel[0] += w[0]*a*scale;                    // accelerate on their own ramps
+    camVel[1] += w[1]*a*scale;
+    camVel[2] += w[2]*a*scaleV;
+  }
+  const damp = Math.pow(CAMDRAG, dt);            // quick stop, slight glide
+  camVel[0] *= damp; camVel[1] *= damp; camVel[2] *= damp;
+  // caps too: horizontal and vertical are clamped separately, scaled with the
+  // push so half a push is half the speed
+  const base = (sprint ? SPRINT : WALK) * (mag > 0.02 ? mag : 1);
+  const topH = base * scale, topV = base * scaleV;
+  const hn = Math.hypot(camVel[0], camVel[1]);
+  if (hn > topH) { const k = topH/hn; camVel[0] *= k; camVel[1] *= k; }
+  if (Math.abs(camVel[2]) > topV) camVel[2] = Math.sign(camVel[2]) * topV;
+  const hs = Math.hypot(camVel[0], camVel[1]);
+  if (hs*dt > 0.001) {
+    const brg = Math.atan2(camVel[0], camVel[1])*180/Math.PI;
+    const [lo, la] = destPoint(cam.lat, cam.lon, brg, hs*dt);
+    // PARALLEL TRANSPORT. destPoint already follows a great circle, but the
+    // east/north frame the velocity lives in rotates along the way as
+    // meridians converge. Holding the ENU components fixed re-imposes the
+    // old bearing every frame, which turns the path into a rhumb line: near
+    // a pole, strafing traced a parallel of latitude instead of flying
+    // straight (RW, 2026-08-16). The frame's own turn over the step is the
+    // difference between the arrival and departure bearings of the great
+    // circle, so rotate the velocity AND the look direction by it; that
+    // keeps every angle to the path intact, which is what transport means.
+    // (Fly over a pole and the compass heading must reverse: the world
+    // should not spin underneath you instead.)
+    const arrive = (bearingDeg(la, lo, cam.lat, cam.lon) + 180) % 360;
+    let turn = arrive - brg;
+    if (turn > 180) turn -= 360; else if (turn < -180) turn += 360;
+    if (Math.abs(turn) < 90) {          // a degenerate bearing is not a turn
+      const tr = turn*Math.PI/180, c = Math.cos(tr), sn = Math.sin(tr);
+      const vE = camVel[0], vN = camVel[1];
+      camVel[0] = vE*c + vN*sn;
+      camVel[1] = vN*c - vE*sn;
+      cam.yaw = (cam.yaw + turn + 360) % 360;
+    }
+    cam.lat = la;
+    cam.lon = ((lo + 540) % 360) - 180;   // keep it in [-180, 180)
+  }
+  cam.alt += camVel[2]*dt;
+  // terrain clamp (real terrain only; buildings are visual, no collision)
+  const floor = camGround() + 2;
+  if (cam.alt < floor) { cam.alt = floor; if (camVel[2] < 0) camVel[2] = 0; }
+  if (V3.norm(camVel)*dt > 0.001 && surfDist(cam.lat, cam.lon, camFetchPos[0], camFetchPos[1]) > 1500
+      && !elevBusy && Date.now() - lastElevFetch > 1500) {
+    camFetchPos = [cam.lat, cam.lon];             // terrain under the flight path
+    const pts = [[cam.lat, cam.lon]];
+    for (const ahead of [2, 5]) {
+      const d = destPoint(cam.lat, cam.lon, cam.yaw, Math.max(hs, WALK*scale)*ahead);
+      pts.push([d[1], d[0]]);
+    }
+    fetchElevBatch(pts);
+  }
+}
+
+// Chase camera, rigged in the PROJECTILE'S OWN FRAME rather than in
+// compass terms: forward is the velocity vector, up is whatever is left of
+// local vertical once the forward component is removed, right is forward x
+// up. The camera sits behind, a quarter of that distance to the right and a
+// fifth of it above, so the object is never dead centre and its attitude
+// reads against the horizon. It aims at the BISECTOR of two directions:
+// straight along the velocity (where it is going) and straight at the
+// object itself; halfway keeps both the projectile and its destination in
+// frame, where either extreme loses one of them.
+const CHASE_DIST = { balloon: 60, ball: 80, rocket: 500 };
+const CHASE_RIGHT = 0.25, CHASE_UP = 0.20;
+function chaseCamera() {
+  const s = sim;
+  const P = s.r;                                   // projectile position, ECEF
+  const { east, north, up } = enuAt(P);
+  // Forward is the velocity's YAW ONLY (its ground-track bearing), never
+  // its climb angle (RW's amendment, 2026-08-16). A rig built on the full
+  // 3D velocity rolls the whole world: a 45 deg shot puts the camera 45 deg
+  // below the object and the horizon on a diagonal, and a vertical launch
+  // degenerates completely. Flattening forward to the ground track keeps
+  // the horizon level and the view readable at any launch angle, and it
+  // retires the degenerate-reference branch the old version needed.
+  const vE = V3.dot(s.v, east), vN = V3.dot(s.v, north);
+  const hs = Math.hypot(vE, vN);
+  // On a vertical or standstill flight the ground track has no direction to
+  // give; hold the last real bearing, falling back to the launch azimuth.
+  if (hs > 0.5) s._chaseBrg = Math.atan2(vE, vN);
+  else if (s._chaseBrg == null)
+    s._chaseBrg = (s.azim ?? launch.heading ?? cam.yaw) * Math.PI/180;
+  const brg = s._chaseBrg;
+  const F = V3.add(V3.scale(east, Math.sin(brg)), V3.scale(north, Math.cos(brg)));
+  const R = V3.unit(V3.cross(F, up));              // horizontal, to the right
+  const U = up;                                    // straight up: the rig never tilts
+  const d = CHASE_DIST[s.p.ptype] || 120;
+  let O = V3.add(V3.add(V3.scale(F, -d), V3.scale(R, CHASE_RIGHT*d)),
+                 V3.scale(U, CHASE_UP*d));
+  const d0 = V3.norm(O);                           // the rig's intended range
+  // Keep the camera above ground WITHOUT collapsing the rig. Straight up is
+  // where a rocket goes, so "behind" is straight down and the ideal spot is
+  // hundreds of metres underground; naively clamping the altitude there
+  // shrank the range and swung the object off screen. Instead lift the
+  // offset along local vertical and restore its length, which slides the
+  // camera around the object at constant range until it clears the terrain.
+  let C = V3.add(P, O), lla = rToLLA(C);
+  for (let i = 0; i < 3; i++) {
+    const floor = (terrainAt(lla.lat, lla.lon) ?? s.ground0) + 2;
+    if (lla.h >= floor) break;
+    O = V3.add(O, V3.scale(V3.unit(C), floor - lla.h));
+    O = V3.scale(O, d0/(V3.norm(O) || 1));
+    C = V3.add(P, O); lla = rToLLA(C);
+  }
+  const floorF = (terrainAt(lla.lat, lla.lon) ?? s.ground0) + 2;
+  if (lla.h < floorF) { C = llToR(lla.lat, lla.lon, floorF); lla = rToLLA(C); }
+  cam.lat = lla.lat; cam.lon = lla.lon; cam.alt = lla.h;
+  // Aim: halfway between the direction of travel and looking straight at
+  // the object, where "direction of travel" is again the FLATTENED one, so
+  // the camera never pitches up with a climbing shot. In the undistorted
+  // rig that is 8.9 deg either side, well inside the frame; when the
+  // terrain has slid the camera around, halfway could put the object
+  // outside the field of view, so the aim is held within AIM_MAX of the
+  // object and gives up the rest of the lead.
+  const L = V3.unit(V3.sub(P, C));
+  const T = Math.acos(Math.max(-1, Math.min(1, V3.dot(F, L))));
+  // 8.9 deg is exactly what the undistorted rig produces, so a distorted
+  // one never frames the object worse than a clean one
+  const AIM_MAX = 8.9*Math.PI/180;
+  let A = L;
+  if (T > 1e-4) {
+    const f = Math.min(0.5, AIM_MAX/T);            // 0.5 = the halfway rule
+    const sT = Math.sin(T);
+    A = V3.unit(V3.add(V3.scale(L, Math.sin((1-f)*T)/sT),
+                       V3.scale(F, Math.sin(f*T)/sT)));
+  }
+  const e2 = enuAt(C);
+  const ae = V3.dot(A, e2.east), an = V3.dot(A, e2.north), au = V3.dot(A, e2.up);
+  cam.yaw = (Math.atan2(ae, an)*180/Math.PI + 360) % 360;
+  cam.pitch = Math.max(-89.9, Math.min(89.9,
+    Math.atan2(au, Math.hypot(ae, an))*180/Math.PI));
+}
+
+// where a screen point meets the terrain; null when it points at sky.
+// The renderer intersects the look ray with the real heightfield, so the
+// ghost pin lands on the hillside you are actually pointing at.
+function groundPointAt(px, py) {
+  const g = globe.groundRay(px, py);
+  return g ? { lat: g.lat, lng: g.lon, h: g.h } : null;
+}
+function centerGroundPoint() {
+  return groundPointAt(glc.clientWidth/2, glc.clientHeight/2);
+}
+
+/* ---------- launch ladder ---------- */
+// Four stages, all advanced by LEFT click under pointer lock:
+//   free flight -> [click: pin placed at crosshair] heading stage (ghost
+//   arrow from pin tracks the crosshair bearing) -> [click] angle stage
+//   (vertical mouse motion sets launch angle; the arrow tilts in the
+//   vertical plane of the locked heading, and a translucent ghost
+//   trajectory previews the whole flight, live-recomputed) -> [click]
+//   LAUNCH, clock from 0:00.
+// RIGHT click steps back one stage; Esc exits pointer lock (menu mode) and,
+// if a ladder was armed, cancels it. Placing a new pin clears the previous
+// run's track and landing marker.
+const launch = { lat: null, lon: null, groundElev: null, heading: 90, marker: null };
+let launchStage = "free";     // free | heading | angle
+let simStatus = "none";       // none | flying | landed | floating
+let ghostMarker = null;
+
+function setHint(t) { $("stateHint").textContent = t; }
+
+// The bottom bar follows the click-to-launch pipeline instead of vanishing
+// the moment the pointer is captured. Each stage says what the next click
+// does, and the two presets that break the three-step pattern say so:
+// an aimless one (the balloon) launches on the FIRST click, and a
+// site-locked one (Falcon 9) ignores where you click entirely.
+let lastFlyHint = "";
+function flyHintHtml() {
+  const pr = PRESETS[$("preset").value] || {};
+  const oneClick = !!pr.aimless && +$("speed").value === 0;   // same test placeLaunch uses
+  if (!locked)
+    return "<b>Click the map</b> to fly: mouse looks, <b>W</b> flies where you look "
+      + "(<b>A/D</b> strafe, <b>Space</b> climbs, <b>Shift</b> descends, <b>Alt</b> or "
+      + "double-tap-W sprints, scroll trims speed). <b>T</b> pauses, <b>arrow left/right</b> "
+      + "sets time speed. <b>Esc</b> returns here.";
+  if (launchStage === "heading")
+    return "Step 2 of 3 &middot; <b>heading " + Math.round(launch.heading) + "&deg;</b>: "
+      + "look where it should fly, <b>left click</b> locks the arrow. "
+      + "<b>Right click</b> goes back to the launch point.";
+  if (launchStage === "angle")
+    return "Step 3 of 3 &middot; <b>launch angle " + (+$("angle").value || 0).toFixed(1)
+      + "&deg;</b>: <b>scroll</b> or <b>arrow up/down</b> to change it (shift for fine), "
+      + "the ghost arc previews the whole flight. <b>Left click</b> launches, "
+      + "<b>right click</b> goes back to the heading.";
+  if (simStatus === "flying" && $("followToggle").checked)
+    return "Following &middot; the camera trails the object. <b>Esc</b> or a <b>click</b> "
+      + "takes the controls back, <b>T</b> pauses, <b>arrow left/right</b> changes time speed.";
+  if (simStatus === "flying")
+    return "Flying &middot; <b>T</b> pauses, <b>arrow left/right</b> changes time speed, "
+      + "<b>follow object</b> rides the chase camera. <b>Left click</b> starts a new launch.";
+  const esc = " <b>Esc</b> opens the menu.";
+  if (pr.site && oneClick)
+    return "<b>Left click anywhere</b> starts the count &middot; " + pr.site.name
+      + ", azimuth " + pr.azimuth + "&deg;. The pad and heading are part of the mission, "
+      + "so where you click does not matter." + esc;
+  if (oneClick)
+    return "<b>Left click</b> releases it at the crosshair &middot; no heading or angle to "
+      + "set, it goes where the air takes it." + esc;
+  return "Step 1 of 3 &middot; <b>left click</b> sets the launch point at the crosshair, "
+    + "then you set the heading, then the angle." + esc;
+}
+function updateFlyHint() {
+  const h = flyHintHtml();
+  if (h !== lastFlyHint) { lastFlyHint = h; $("flyHint").innerHTML = h; }
+}
+
+function ensureGhost() {
+  if (!ghostMarker) {
+    ghostMarker = mkMarker("padIcon ghost");
+    ghostMarker.el.style.display = "none";
+  }
+  return ghostMarker;
+}
+function hideGhost() { if (ghostMarker) ghostMarker.el.style.display = "none"; }
+
+function updateGhost() {
+  if (!locked || launchStage !== "free") { hideGhost(); return; }
+  const pt = centerGroundPoint();
+  if (!pt) { hideGhost(); return; }
+  const g = ensureGhost();
+  g.setPos(pt.lat, pt.lng, pt.h);
+  g.el.style.display = "";
+}
+
+function placeLaunch(lat, lon) {
+  clearRun();
+  // A preset with a fixed site owns its own launch point and azimuth: you do not
+  // get to choose where a Falcon 9 lifts off from, and the azimuth is set by the
+  // orbit it is going to. Wherever you click, the pad is the pad.
+  const prS = PRESETS[$("preset").value];
+  if (prS && prS.site) {
+    lat = prS.site.lat; lon = prS.site.lon;
+    launch.heading = prS.azimuth;
+  }
+  launch.lat = lat; launch.lon = lon; launch.groundElev = null;
+  if (!launch.marker) launch.marker = mkMarker("padIcon");
+  launch.marker.setPos(lat, lon, terrainAt(lat, lon) ?? HOME.elev);
+  launch.marker.el.style.display = "";
+  hideGhost();
+  resolveLaunchElev();
+  if ($("windCurrent").checked && windProfileStale(lat, lon)) loadWind(lat, lon);
+  if (PRESETS[$("preset").value]?.aimless && +$("speed").value === 0) {
+    launchStage = "angle";   // doFire() expects the ladder to be armed
+    doFire();                // released, not aimed: no heading or angle stage
+    return;
+  }
+  launchStage = "heading";
+  setHint("Aim: left click locks the heading. Right click steps back.");
+}
+
+function enterAngleStage() {
+  launchStage = "angle";
+  globe.clearLines("aim");
+  lastPreviewKey = null;      // force a ghost-trajectory recompute
+  setHint("Set the launch angle with the scroll wheel or arrow keys ("
+          + (+$("angle").value || 0).toFixed(0) + " deg). Look around freely. Left click launches.");
+}
+
+function ladderAdvance() {           // left click under pointer lock
+  if (launchStage === "free") {
+    const pt = centerGroundPoint();
+    if (pt) placeLaunch(pt.lat, pt.lng);
+  } else if (launchStage === "heading") {
+    enterAngleStage();
+  } else if (launchStage === "angle") {
+    doFire();
+  }
+}
+function ladderBack() {              // right click under pointer lock
+  if (launchStage === "angle") {
+    line3d.clear("ghost"); line3d.clear("aimup");
+    launchStage = "heading";
+    setHint("Aim: left click locks the heading. Right click steps back.");
+  } else if (launchStage === "heading") {
+    resetLadder();
+  }
+}
+function resetLadder() {
+  launchStage = "free";
+  globe.clearLines("aim");
+  line3d.clear("ghost"); line3d.clear("aimup");
+  if (launch.marker) launch.marker.el.style.display = "none";
+  $("headingOut").textContent = "–";
+  setHint("Left click sets the launch point.");
+}
+
+let launchElevPromise = null;
+function resolveLaunchElev() {
+  const la = launch.lat, lo = launch.lon;
+  const known = terrainAt(la, lo);
+  if (known != null) { launch.groundElev = known; $("groundOut").textContent = known.toFixed(0) + " m"; return; }
+  $("groundOut").textContent = "...";
+  launchElevPromise = fetchElevBatch([[la, lo]]).then(() => {
+    const e = terrainAt(la, lo);
+    if (e != null && la === launch.lat) {
+      launch.groundElev = e; $("groundOut").textContent = e.toFixed(0) + " m";
+      if (launch.marker) launch.marker.setPos(la, lo, e);   // settle onto terrain
+    }
+  });
+}
+
+// heading stage: flat ghost arrow from the pin toward the crosshair,
+// drawn a couple of meters above the pin's terrain
+function updateAimArrow() {
+  if (launchStage !== "heading") return;
+  const pt = centerGroundPoint();
+  if (!pt) return;                       // aiming at sky: keep the last arrow
+  const brg = bearingDeg(launch.lat, launch.lon, pt.lat, pt.lng);
+  launch.heading = brg;
+  $("headingOut").textContent = brg.toFixed(0) + "°";
+  const h = launch.groundElev ?? terrainAt(launch.lat, launch.lon) ?? 0;
+  const len = 70 * globe.mppAt(launch.lat, launch.lon, h);   // ~70 px on screen
+  globe.setLines("aim", arrowPolys(launch.lat, launch.lon, brg, len, h + 2),
+                 [1.0, 0.83, 0.47, 0.9], 3);
+}
+
+// angle stage: the arrow tilts in the vertical plane of the locked heading
+// The launch angle gets its own input axis: the SCROLL WHEEL. Binding it to
+// camera pitch (or to pin-to-crosshair geometry, which comes to the same thing
+// on flat ground) meant every positive angle required looking up into empty
+// sky, away from the scene you are aiming at. The wheel leaves mouse-look
+// completely free, so you can orbit the ghost arc while tuning it.
+function nudgeAngle(deg) {
+  const el = $("angle");
+  el.value = Math.min(Math.max((+el.value || 0) + deg, -90), 90).toFixed(1);
+  updateBadge();
+}
+function updateAimUpArrow() {
+  if (launchStage !== "angle") return;
+  const a = (+$("angle").value || 0) * Math.PI/180;
+  const g0 = (launch.groundElev ?? terrainAt(launch.lat, launch.lon) ?? 0) + 1;
+  const L = 70 * globe.mppAt(launch.lat, launch.lon, g0);
+  const seg = (hDist, dAlt) => {
+    const [lo, la] = destPoint(launch.lat, launch.lon, launch.heading, hDist);
+    return [la, lo, g0 + dAlt];
+  };
+  const tipH = L*Math.cos(a), tipV = L*Math.sin(a);
+  const barb = b => [tipH + 0.25*L*Math.cos(b), tipV + 0.25*L*Math.sin(b)];
+  const b1 = barb(a + Math.PI*5/6), b2 = barb(a - Math.PI*5/6);
+  line3d.setLines("aimup", [
+    [seg(0, 0), seg(tipH, tipV)],
+    [seg(b1[0], b1[1]), seg(tipH, tipV)],
+    [seg(b2[0], b2[1]), seg(tipH, tipV)],
+  ], [1.0, 0.83, 0.47, 0.95], 3);
+}
+
+/* ---------- ghost trajectory preview ---------- */
+// A coarse-dt run of the same physics from the current pin, heading, angle,
+// preset fields and wind, drawn as a translucent 3D curve. Terrain checks
+// use whatever elevation cells are already cached (falling back to the
+// launch elevation), so the preview touchdown is approximate.
+let lastPreviewKey = null, lastPreviewAt = 0;
+function previewKey() {
+  const p = readParams();
+  const angleTerm = p.speed > 0 ? Math.round((+$("angle").value || 0)*2) : 0;
+  return JSON.stringify([launch.lat, launch.lon, launch.heading.toFixed(1), angleTerm, p,
+    $("windManual").checked, $("windSpeed").value, $("windDir").value,
+    windProfileMeta && windProfileMeta.fetchedAt]);
+}
+function maybeComputePreview() {
+  if (launchStage !== "angle" || launch.groundElev == null) return;
+  const now = performance.now();
+  if (now - lastPreviewAt < 250) return;
+  const key = previewKey();
+  if (key === lastPreviewKey) return;
+  lastPreviewKey = key; lastPreviewAt = now;
+  const p = readParams();
+  const s = makeState(p, launch.lat, launch.lon, launch.groundElev,
+                      launch.heading, +$("angle").value || 0, true);
+  // coarse but stable step: balloon tau ~0.14 s near ground caps RK4 around
+  // 0.35 s; the ball preview is cheap at 5 ms
+  const dtP = p.ptype === "balloon" ? 0.3 : 0.005;
+  const every = p.ptype === "balloon" ? 10 : 4;
+  const g0 = launch.groundElev ?? 0;
+  const pts = [[launch.lat, launch.lon, g0 + p.relH]];   // real MSL altitudes
+  const budget = now + 250;             // hard wall-time cap per recompute
+  for (let i = 0; i < 80000; i++) {
+    rk4(s, dtP);
+    checkBurst(s);
+    const lla = rToLLA(s.r);
+    const ground = terrainAt(lla.lat, lla.lon) ?? s.ground0;
+    if (lla.h <= ground) { pts.push([lla.lat, lla.lon, ground]); break; }
+    if (i % every === 0) pts.push([lla.lat, lla.lon, lla.h]);
+    if (s.t > 6*3600 || (i % 500 === 0 && performance.now() > budget)) break;
+  }
+  line3d.setLines("ghost", [pts], [1.0, 0.9, 0.5, 0.4], 2.5);
+}
+
+/* ---------- input ---------- */
+glc.addEventListener("contextmenu", e => e.preventDefault());
+canvas().addEventListener("mousedown", e => {
+  if (!locked) {
+    if (e.button === 0) canvas().requestPointerLock();   // swallowed: no ladder
+    return;
+  }
+  // a click while the chase camera is flying the view takes control back
+  // instead of starting a new launch; the click is spent on that
+  if ($("followToggle").checked && simStatus === "flying") {
+    $("followToggle").checked = false;
+    camVel[0] = camVel[1] = camVel[2] = 0;
+    return;
+  }
+  if (e.button === 0) ladderAdvance();
+  else if (e.button === 2) ladderBack();
+});
+document.addEventListener("pointerlockchange", () => {
+  locked = document.pointerLockElement === canvas();
+  $("crosshair").style.display = locked ? "block" : "none";
+  // Esc released the pointer: cancel any armed ladder too (menu mode)
+  if (!locked && launchStage !== "free") resetLadder();
+});
+document.addEventListener("mousemove", e => {
+  if (!locked) return;
+  cam.yaw = (cam.yaw + e.movementX*0.12 + 360) % 360;
+  cam.pitch = Math.min(Math.max(cam.pitch - e.movementY*0.12, -89.9), 89.9);
+});
+canvas().addEventListener("wheel", e => {
+  e.preventDefault();
+  if (launchStage === "angle") {                     // wheel is the angle knob here
+    nudgeAngle((e.deltaY > 0 ? -1 : 1) * (e.shiftKey ? 0.2 : 2));
+    setHint("Launch angle " + (+$("angle").value || 0).toFixed(1)
+            + " deg (scroll or arrow keys, shift for fine). Left click launches.");
+    return;
+  }
+  speedMult = Math.min(Math.max(speedMult * Math.exp(-e.deltaY*0.001), 0.05), 20);
+}, { passive: false });
+function setPauseUi() {
+  $("playPause").textContent = playing ? "Pause" : "Play";
+  $("clock").style.opacity = playing || simStatus !== "flying" ? "" : "0.45";
+  $("pauseFlag").style.display = !playing && simStatus === "flying" ? "" : "none";
+}
+function togglePause() {
+  if (!sim || simStatus !== "flying") return;
+  playing = !playing;
+  setPauseUi();
+}
+document.addEventListener("keydown", e => {
+  const tag = (document.activeElement || {}).tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  // Esc hands the camera back: drop the chase before anything else, so one
+  // press during a flight returns you to free flight rather than only
+  // releasing the pointer
+  if (e.code === "Escape" && $("followToggle").checked) $("followToggle").checked = false;
+  if (e.code === "Escape" && launchStage !== "free") resetLadder();
+  if (launchStage === "angle" && (e.code === "ArrowUp" || e.code === "ArrowDown")) {
+    e.preventDefault();                       // laptop fallback for the wheel
+    nudgeAngle((e.code === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 0.2 : 2));
+    setHint("Launch angle " + (+$("angle").value || 0).toFixed(1)
+            + " deg (scroll or arrow keys, shift for fine). Left click launches.");
+    return;
+  }
+  if (e.code === "ArrowLeft" || e.code === "ArrowRight") {
+    e.preventDefault();                       // time speed, one step per press
+    const sel = $("timeSpeed"), i = sel.selectedIndex;
+    const j = Math.min(Math.max(i + (e.code === "ArrowRight" ? 1 : -1), 0), sel.options.length - 1);
+    if (j !== i) { sel.selectedIndex = j; sel.dispatchEvent(new Event("change")); }
+    setHint("Time speed " + sel.value + "x");
+    return;
+  }
+  if (e.code === "Space") { e.preventDefault(); }  // reserved for fly (climb)
+  if (e.code === "KeyT" && !e.repeat) {   // pause toggle in both fly and menu mode
+    togglePause();
+    return;
+  }
+  if (e.code === "KeyW" && !e.repeat) {         // double tap to sprint
+    if (performance.now() - lastW < 300) sprintLatch = true;
+    lastW = performance.now();
+  }
+  if (e.code === "AltLeft" || e.code === "AltRight") e.preventDefault();
+  keys.add(e.code);
+});
+document.addEventListener("keyup", e => {
+  keys.delete(e.code);
+  if (e.code === "KeyW") sprintLatch = false;
+});
+window.addEventListener("blur", () => keys.clear());
+document.addEventListener("visibilitychange", () => { if (document.hidden) keys.clear(); });
+
+/* ---------- simulation core ---------- */
+// State: position r and velocity v as 3-vectors from Earth's center in the
+// rotating Earth-fixed frame (ECEF over a spherical Earth of radius
+// R_EARTH; no geodetic flattening, a display-only error far below tile
+// resolution at these scales). Frame decision, kept consistent everywhere:
+// integrate in the ROTATING frame, so wind, terrain and the ground are
+// static data, and Earth rotation appears as explicit Coriolis
+// (-2 Omega x v) and centrifugal (-Omega x (Omega x r)) accelerations.
+// Gravity is GM/r^2 toward the center, not a constant 9.81. At balloon and
+// baseball speeds the pseudo-terms are ~1e-4 of gravity and results match a
+// flat-ENU integration (regression-checked); at orbital speeds the same
+// equations remain valid, so a fast preset is a parameters-only addition.
+let sim = null;
+let playing = false, lastFrame = null, stepCarry = 0;
+let objMarker = null, landMarker = null;
+let trackShadow = null, track3d = null, velArrowState = null;
+
+function clearRun() {
+  if (objMarker) { objMarker.remove(); objMarker = null; }
+  if (landMarker) { landMarker.remove(); landMarker = null; }
+  globe.clearLines("shadow");
+  line3d.clear("track"); line3d.clear("drop"); line3d.clear("vel");
+  line3d.clear("velg"); line3d.clear("ghost");
+  line3d.tagPoint = null; $("objTag").style.display = "none"; $("objDot").style.display = "none";
+  trackShadow = null; track3d = null; velArrowState = null; liveTail = null;
+  $("landPanel").style.display = "none";
+  sim = null; playing = false; simStatus = "none"; setPauseUi();
+  $("clock").innerHTML = "0:00<small>.0</small>";
+  $("hudPhase").textContent = "idle";
+}
+
+function readParams() {
+  const p = {};
+  for (const f of PRESET_FIELDS) {
+    const el = $(FIELD_IDS[f]);
+    p[f] = el.type === "checkbox" ? el.checked : (el.tagName === "SELECT" ? el.value : +el.value);
+  }
+  // Fields with no panel control come straight from the preset. Without this the
+  // physics silently fell back to defaults: the drag curve did nothing, and a
+  // rocket launched as a zero-speed ball that fell over on its own pad.
+  const pr = PRESETS[$("preset").value];
+  if (pr) {
+    p.dragModel = pr.dragModel || "fixed"; p.bc = pr.bc || 0;
+    for (const k of ["r1","r2","payload","fairing","fairingT","sepDelay","area",
+                     "qStart","qEnd","qThrottle","gLimit","vertUntil","kickUntil",
+                     "kickDeg","targetAlt","guideTau","site","azimuth"])
+      if (k in pr) p[k] = pr[k];
+  }
+  return p;
+}
+
+// build a fresh physics state; shared by the real launch and the preview
+function makeState(p, lat, lon, g0, headingDeg, angleDeg, preview) {
+  const hd = headingDeg * Math.PI/180, an = angleDeg * Math.PI/180;
+  // one form factor per run: scales the reference drag curve to this projectile
+  const formF = (p.dragModel && p.dragModel !== "fixed" && p.bc > 0)
+    ? formFactor(p.bc, p.mMass, p.mDiam) : 0;
+  const r0 = llToR(lat, lon, g0 + p.relH);
+  const { east, north, up } = enuAt(r0);
+  const hdir = V3.add(V3.scale(east, Math.sin(hd)), V3.scale(north, Math.cos(hd)));
+  const v0 = V3.add(V3.scale(hdir, p.speed*Math.cos(an)), V3.scale(up, p.speed*Math.sin(an)));
+  const s = {
+    p, t: 0, lat0: lat, lon0: lon, ground0: g0, preview: !!preview,
+    r: r0, v: v0,
+    phase: p.ptype === "balloon" ? "balloon" : (p.ptype === "rocket" ? "rocket" : "ball"),
+    trackLen: 0, calmSince: null, burstInfo: null,
+    lastTrackT: -1, lastTrack3dT: -1, lastTerrainCheckPos: [lat, lon],
+  };
+  if (p.ptype === "rocket") {
+    s.stage = 1; s.burning = true; s.done = false; s.fairingGone = false;
+    s.azim = headingDeg;                    // the launch azimuth steers the turn
+    s.mass = p.r1.dry + p.r1.prop + p.r2.dry + p.r2.prop + p.fairing + p.payload;
+    s.prop = p.r1.prop;
+    s.m0 = s.mass; s.log = []; s.maxQ = null; s.sepAt = null;
+  } else if (p.ptype === "balloon") {
+    // helium mass fixed at fill: ideal gas at launch-site ISA conditions
+    // (ambient pressure assumed inside the envelope; the ~1 kPa latex
+    // overpressure of a party balloon is a ~1% density effect, ignored)
+    const atm = atmAt(g0 + p.relH);
+    s.d0 = p.bDiam/100;
+    s.mHe = atm.p * (Math.PI/6 * s.d0**3) / (R_HE * atm.T);
+    s.mLatex = p.bLatex/1000;
+  } else {
+    s.m = p.mMass/1000;
+    s.area = Math.PI/4 * (p.mDiam/1000)**2;
+    s.formF = formF;      // 0 means "use the preset's fixed mCd"
+    // backspin axis: horizontal, perpendicular to the launch heading, fixed
+    // in the Earth frame for the whole flight (spin decay over ~1 s is
+    // negligible). With this axis, Magnus = 0.5 rho A Cl |v_rel|^2
+    // (axis x v_rel_hat) points up for level flight, the four-seam "ride".
+    s.spinAxis = V3.unit(V3.cross(hdir, up));
+  }
+  return s;
+}
+
+async function doFire() {
+  if (launch.groundElev == null && launchElevPromise) await launchElevPromise;
+  const g0 = launch.groundElev ?? 0;
+  if ($("windCurrent").checked && windProfileStale(launch.lat, launch.lon))
+    await loadWind(launch.lat, launch.lon);
+  launchStage = "free";
+  line3d.clear("ghost"); line3d.clear("aimup");
+  globe.clearLines("aim");
+  const p = readParams();
+  const s = makeState(p, launch.lat, launch.lon, g0, launch.heading, p.angle, false);
+  sim = s; simStatus = "flying";
+  playing = true; stepCarry = 0;
+  setPauseUi();
+  trackShadow = [[launch.lat, launch.lon, g0 + 1.5]];
+  track3d = [[launch.lat, launch.lon, g0 + p.relH]];
+  // the dot marker is the object's GROUND SHADOW, demoted to a small grey
+  // disc; the object itself is the blue #objDot billboard riding the 3D
+  // point (plus the faint 3D cross), label beside it
+  const wrap = mkEl("gmk posWrap");
+  const dot = mkEl("dot");
+  dot.style.background = "#6b7280";
+  dot.style.width = "9px"; dot.style.height = "9px"; dot.style.opacity = "0.8";
+  wrap.appendChild(dot);
+  document.body.appendChild(wrap);
+  objMarker = globe.addMarker(wrap);
+  objMarker.setPos(launch.lat, launch.lon, g0);
+  s.dotEl = dot;
+  setHint("Flying. Left click starts a new launch.");
+  $("hudPhase").textContent = s.phase;
+}
+
+// force model in the rotating Earth frame; acceleration for candidate (r, v)
+function accel(s, r, v) {
+  const p = s.p;
+  const rn = V3.norm(r), h = rn - R_EARTH;
+  const atm = atmAt(h);
+  const { east, north, up } = enuAt(r);
+  const w = windAt(h);   // wind blows horizontally in the local frame
+  const wv = V3.add(V3.scale(east, w.u), V3.scale(north, w.v));
+  const vrel = V3.sub(v, wv);
+  const rs = V3.norm(vrel);
+  const gLoc = GM/(rn*rn);
+  // rotating-frame pseudo-accelerations, mass-independent
+  const om = [0, 0, OMEGA];
+  const pseudo = V3.sub(V3.scale(V3.cross(om, V3.cross(om, r)), -1),
+                        V3.scale(V3.cross(om, v), 2));
+  let mEff, F;
+  if (s.phase === "rocket") {
+    // Powered flight. Mass depletes, thrust rises as ambient pressure falls,
+    // and the vehicle flies a COMMANDED ATTITUDE rather than a launch angle:
+    // vertical off the pad, a short pitch kick, then a gravity turn where the
+    // thrust axis follows the velocity vector. That is what a real ascent does,
+    // and it is why this preset does not offer a launch-angle control.
+    const st = s.stage === 1 ? p.r1 : p.r2;
+    mEff = s.mass;
+    let F0 = [0, 0, 0];
+    if (s.burning) {
+      // sea-level to vacuum thrust by ambient pressure ratio
+      const thr = st.thrVac - (atm.p/101325)*(st.thrVac - st.thrSL);
+      let throttle = 1;
+      if (s.stage === 1) {
+        if (s.t > p.qStart && s.t < p.qEnd) throttle = p.qThrottle;   // through max Q
+        const aMax = p.gLimit*9.80665;                                // structural g cap
+        if (thr/mEff > aMax) throttle = Math.min(throttle, aMax*mEff/thr);
+      } else {
+        // insertion taper: at full thrust the speed shoots ~260 m/s past
+        // circular in the seconds the guidance needs to null the last of
+        // the climb, and that overshoot is pure apogee (measured: 1,100 km
+        // apogee). The real stage throttles through insertion; so does this.
+        const vIn = V3.add(v, V3.cross([0, 0, OMEGA], r));
+        const frac = V3.norm(vIn) / Math.sqrt(GM/rn);
+        if (frac > 0.985) throttle = Math.max(0.12, 1 - (frac - 0.985)/0.02);
+      }
+      s._thr = thr*throttle;
+      s._mdot = s._thr/(9.80665*st.isp);               // Isp already blends with thrust
+      const dir = thrustDir(s, r, v, p);
+      F0 = V3.scale(dir, s._thr);
+      s._acc = s._thr/mEff/9.80665;
+    } else { s._thr = 0; s._mdot = 0; s._acc = 0; }
+    F = V3.add(F0, V3.scale(up, -mEff*gLoc));
+    if (p.drag && rs > 1e-9) {
+      const cd = machCd(rs/SOUND(atm.T));             // blunt-ish launch vehicle
+      s._cd = cd; s._q = 0.5*atm.rho*rs*rs;           // dynamic pressure, for max Q
+      F = V3.add(F, V3.scale(vrel, -0.5*atm.rho*cd*p.area*rs));
+    }
+  } else if (s.phase === "balloon") {
+    // envelope expands with the fixed helium mass at ambient p, T
+    const V = s.mHe * R_HE * atm.T / atm.p;
+    const d = Math.cbrt(6*V/Math.PI);
+    const A = Math.PI/4 * d*d;
+    const m = s.mLatex + s.mHe;
+    // added (virtual) mass: accelerating a sphere also accelerates ~half the
+    // displaced air; without it a light balloon's response is unphysically
+    // twitchy. Kept even with drag toggled off, it only shapes transients.
+    mEff = m + 0.5*atm.rho*V;
+    // buoyancy = weight of displaced air along local up (the centrifugal
+    // part of effective gravity on that air, ~0.3%, is ignored)
+    F = V3.scale(up, (atm.rho*V - m)*gLoc);
+    if (p.drag) F = V3.add(F, V3.scale(vrel, -0.5*atm.rho*p.bCd*A*rs));
+    s._d = d;                                        // for the burst check
+  } else if (s.phase === "scrap") {
+    mEff = s.mLatex;
+    F = V3.scale(up, -mEff*gLoc);
+    if (p.drag)
+      F = V3.add(F, V3.scale(vrel, -0.5*atm.rho*p.bScrapCd*(p.bScrapArea/1e4)*rs));
+  } else {   // ball
+    mEff = s.m;
+    F = V3.scale(up, -mEff*gLoc);
+    if (p.drag && rs > 1e-9) {
+      // Cd from the drag curve when the preset names one, else the fixed value
+      const cd = s.formF ? s.formF * cdFromTable(p.dragModel, rs/SOUND(atm.T)) : p.mCd;
+      s._cd = cd;                                    // surfaced in the HUD
+      F = V3.add(F, V3.scale(vrel, -0.5*atm.rho*cd*s.area*rs));
+      // Magnus: F = 0.5 rho A Cl |v_rel|^2 (spin_axis x v_rel_hat)
+      F = V3.add(F, V3.scale(V3.cross(s.spinAxis, vrel), 0.5*atm.rho*p.mCl*s.area*rs));
+    }
+  }
+  return V3.add(V3.scale(F, 1/mEff), pseudo);
+}
+
+function rk4(s, dt) {
+  const r = s.r, v = s.v;
+  const a1 = accel(s, r, v);
+  const v2 = V3.add(v, V3.scale(a1, dt/2)), r2 = V3.add(r, V3.scale(v, dt/2));
+  const a2 = accel(s, r2, v2);
+  const v3 = V3.add(v, V3.scale(a2, dt/2)), r3 = V3.add(r, V3.scale(v2, dt/2));
+  const a3 = accel(s, r3, v3);
+  const v4 = V3.add(v, V3.scale(a3, dt)), r4 = V3.add(r, V3.scale(v3, dt));
+  const a4 = accel(s, r4, v4);
+  const dr = V3.scale(V3.add(V3.add(v, V3.scale(V3.add(v2, v3), 2)), v4), dt/6);
+  s.r = V3.add(r, dr);
+  s.v = V3.add(v, V3.scale(V3.add(V3.add(a1, V3.scale(V3.add(a2, a3), 2)), a4), dt/6));
+  s.t += dt;
+  if (s.phase === "rocket") rocketEvents(s, dt);
+  const upc = V3.unit(s.r);
+  const drH = V3.sub(dr, V3.scale(upc, V3.dot(dr, upc)));
+  s.trackLen += V3.norm(drH);
+}
+
+function simLatLon(s) { const a = rToLLA(s.r); return [a.lat, a.lon]; }
+function simAlt(s) { return V3.norm(s.r) - R_EARTH; }
+
+function checkBurst(s) {
+  if (s.phase !== "balloon") return;
+  const h = simAlt(s);
+  if ((s._d && s._d >= s.p.bStretch * s.d0) || h >= s.p.bBurstAlt) {
+    s.phase = "scrap";
+    s.burstInfo = { t: s.t, alt: h, d: s._d,
+      reason: h >= s.p.bBurstAlt ? "cold embrittlement altitude" : "stretch limit" };
+    if (!s.preview) {
+      $("hudPhase").textContent = "scrap (burst)";
+      if (s.dotEl) s.dotEl.style.background = "#a0aec0";
+    }
+  }
+}
+
+// Ascent sequencing: burn propellant, stage, drop the fairing, cut off. Times
+// come from the published flight profile; the burns end when their propellant
+// runs out, so the milestones fall where the physics puts them, not where a
+// script says. The event log is what the landing panel reports afterwards.
+function rocketEvents(s, dt) {
+  const p = s.p;
+  if (s.burning) {
+    s.mass -= s._mdot*dt;
+    s.prop -= s._mdot*dt;
+    const floor = (s.stage === 1 ? (p.r1.reserve || 0) : 0);
+    // A second stage cuts off at ORBITAL INSERTION, not when the tanks empty.
+    // The criterion is the PERIGEE of the instantaneous orbit, not circular
+    // speed at the current radius: at cutoff the stage still climbs ~180 m/s,
+    // and "circular speed while climbing" is an ellipse whose perigee sat at
+    // 8 km altitude, so the vehicle coasted to apogee and reentered half an
+    // orbit later (RW watched it crash into the ocean at 1000x). Burning the
+    // extra ~450 kg to raise the perigee is what a real insertion does.
+    // Elements are computed in the inertial frame, since the rotating frame
+    // hides the ~400 m/s an eastward launch gets free from the Earth's spin.
+    if (s.stage === 2 && s.burning) {
+      const rn = V3.norm(s.r);
+      const vIn = V3.add(s.v, V3.cross([0, 0, OMEGA], s.r));
+      const vi = V3.norm(vIn);
+      const eps = vi*vi/2 - GM/rn;
+      if (eps < 0) {
+        const sma = -GM/(2*eps);
+        const hv = V3.cross(s.r, vIn);
+        const ecc = Math.sqrt(Math.max(0, 1 + 2*eps*V3.dot(hv, hv)/(GM*GM)));
+        const perigee = sma*(1 - ecc) - R_EARTH;
+        // Two ways to be inserted: the instantaneous perigee clears the
+        // drag tail, OR speed has reached circular with the climb nulled,
+        // in which case this point IS the perigee (a few m/s of residual
+        // climb dips it a couple of tens of km, still far above the air).
+        // Without the second clause the residual climb kept the computed
+        // perigee under the bar and the stage burned prograde at perigee,
+        // which only balloons the apogee (measured: 150 x 3,647 km).
+        const vUpNow = V3.dot(s.v, V3.unit(s.r));
+        if (perigee >= Math.min(150000, p.targetAlt - 50000)
+            || (vi >= Math.sqrt(GM/rn) && Math.abs(vUpNow) <= 25)) {
+          s.burning = false; s.done = true;
+          s.log.push({ t: s.t, e: "SECO, orbital insertion", alt: simAlt(s), v: V3.norm(s.v) });
+          s.orbit = { vInertial: vi, vCirc: Math.sqrt(GM/rn), propLeft: s.prop,
+                      perigee, apogee: sma*(1 + ecc) - R_EARTH };
+          return;
+        }
+      }
+    }
+    if (s.prop <= floor) {                   // engine cutoff, this stage is done
+      s.burning = false;
+      s.log.push({ t: s.t, e: s.stage === 1 ? "MECO" : "SECO",
+                   alt: simAlt(s), v: V3.norm(s.v) });
+      if (s.stage === 2) s.done = true;
+      else s.sepAt = s.t + p.sepDelay;
+    }
+  } else if (s.stage === 1 && s.sepAt && s.t >= s.sepAt) {
+    s.stage = 2;                             // drop the booster, light the vacuum engine
+    s.stage2T0 = s.t;
+    // the whole booster leaves: dry mass AND the propellant it kept back for the
+    // landing burn. Forgetting the reserve left the upper stage carrying 25 t of
+    // phantom fuel and cost it 2.5 km/s, which read as impossible gravity losses
+    s.mass -= p.r1.dry + Math.max(0, s.prop);
+    s.prop = p.r2.prop;
+    s.burning = true;
+    s.log.push({ t: s.t, e: "stage separation, second-stage ignition",
+                 alt: simAlt(s), v: V3.norm(s.v) });
+  }
+  if (!s.fairingGone && s.t >= p.fairingT) { // fairing halves, once out of the air
+    s.fairingGone = true;
+    s.mass -= p.fairing;
+    s.log.push({ t: s.t, e: "fairing jettison", alt: simAlt(s), v: V3.norm(s.v) });
+  }
+  if (s._q && s._q > (s.maxQ ? s.maxQ.q : 0)) s.maxQ = { q: s._q, t: s.t, alt: simAlt(s) };
+}
+
+// terrain-ahead prefetching: when low, or after ~2 km of drift, batch-fetch
+// the cells below and ahead along the current velocity
+function terrainMaintenance(s, ll) {
+  const known = terrainAt(ll[0], ll[1]);
+  const h = simAlt(s);
+  const agl = h - (known ?? s.ground0);
+  const drifted = surfDist(ll[0], ll[1], s.lastTerrainCheckPos[0], s.lastTerrainCheckPos[1]) > 2000;
+  const low = agl < 500;
+  if ((low || drifted || known == null) && !elevBusy && Date.now() - lastElevFetch > 1200) {
+    s.lastTerrainCheckPos = ll;
+    const { east, north, up } = enuAt(s.r);
+    const vE = V3.dot(s.v, east), vN = V3.dot(s.v, north), vU = V3.dot(s.v, up);
+    const hs = Math.hypot(vE, vN);
+    const brg = (Math.atan2(vE, vN)*180/Math.PI + 360) % 360;
+    const pts = [[ll[0], ll[1]]];
+    for (const dt of [30, 120, 300, 600]) {          // ahead along the drift
+      const d = destPoint(ll[0], ll[1], brg, hs*dt);
+      pts.push([d[1], d[0]]);
+      if (hs*dt > 20000) break;
+    }
+    if (vU < -0.1) {                                 // predicted touchdown cell
+      const d = destPoint(ll[0], ll[1], brg, hs * (agl / -vU));
+      pts.push([d[1], d[0]]);
+    }
+    fetchElevBatch(pts);
+  }
+  // hold the sim rather than land on stale data: pause stepping while the
+  // ground right below is unknown and we are close to it
+  return known == null && agl < 400;
+}
+
+function land(s, ll, ground) {
+  simStatus = "landed"; playing = false; setPauseUi();
+  const impact = V3.norm(s.v);
+  const straight = surfDist(s.lat0, s.lon0, ll[0], ll[1]);
+  landMarker = mkMarker("", LAND_SVG);
+  landMarker.setPos(ll[0], ll[1], ground);
+  if (objMarker) { objMarker.remove(); objMarker = null; }
+  line3d.clear("drop"); line3d.clear("vel"); line3d.clear("velg");
+  line3d.tagPoint = null; $("objTag").style.display = "none"; $("objDot").style.display = "none";
+  $("hudPhase").textContent = "landed";
+  $("landTitle").textContent = "Landed";
+  const ft = s.t < 60 ? s.t.toFixed(2) + " s" : fmtClock(s.t);
+  $("landStats").innerHTML =
+    `flight time ${ft} &middot; straight-line ${fmtDist(straight)} &middot; ` +
+    `track ${fmtDist(s.trackLen)} &middot; impact ${impact.toFixed(1)} m/s` +
+    (s.burstInfo ? `<br>burst at ${Math.round(s.burstInfo.alt)} m MSL after ${fmtClock(s.burstInfo.t)} (${s.burstInfo.reason})` : "");
+  $("landPanel").style.display = "block";
+  setHint("Landed. Left click starts a new launch.");
+  window.__landing = { t: s.t, straight, trackLen: s.trackLen, impact,
+    lat: ll[0], lon: ll[1], burst: s.burstInfo };
+}
+
+function declareFloating(s, why) {
+  simStatus = "floating"; playing = false; setPauseUi();
+  $("hudPhase").textContent = "floating";
+  $("landTitle").textContent = "Not coming down";
+  $("landStats").innerHTML = why;
+  $("landPanel").style.display = "block";
+  setHint("Still airborne indefinitely. Left click starts a new launch.");
+}
+
+/* ---------- main loop ---------- */
+const MAX_STEPS_PER_FRAME = 20000;
+
+function tick(ts) {
+  requestAnimationFrame(tick);
+  const realDt = lastFrame == null ? 0 : Math.min((ts - lastFrame)/1000, 0.25);
+  lastFrame = ts;
+  {
+    moveCamera(realDt);
+    updateGhost();
+    updateAimArrow();
+    updateAimUpArrow();
+    maybeComputePreview();
+    // project the object's world point for the DOM label + blue disc
+    let ts2 = null;
+    if (line3d.tagPoint) {
+      const pr = globe.project(line3d.tagPoint[0], line3d.tagPoint[1], line3d.tagPoint[2]);
+      if (pr && pr.visible) ts2 = pr;
+    }
+    line3d.tagScreen = ts2;
+    const tag = $("objTag"), dotEl = $("objDot");
+    if (ts2) {
+      tag.style.display = "block";
+      tag.style.left = (ts2.x + 12) + "px"; tag.style.top = (ts2.y - 8) + "px";
+      dotEl.style.display = "block";
+      dotEl.style.left = ts2.x + "px"; dotEl.style.top = ts2.y + "px";
+    } else { tag.style.display = "none"; dotEl.style.display = "none"; }
+    if (sim && simStatus === "flying") { placeObjectGraphics(sim); drawTrackLive(); }
+    updateFlyHint();
+    globe.render();
+  }
+  if (!sim || !playing || simStatus !== "flying") return;
+  const s = sim, dt = s.p.dt, speed = +$("timeSpeed").value;
+
+  let ll = simLatLon(s);
+  if (terrainMaintenance(s, ll)) { setHint("Waiting for terrain data..."); return; }
+
+  stepCarry += speed*realDt/dt;
+  let n = Math.min(Math.floor(stepCarry), MAX_STEPS_PER_FRAME);
+  stepCarry -= n;
+  const trackEvery = dt <= 0.01 ? 0.05 : 1.0;        // s of sim time per vertex
+  const track3dEvery = dt <= 0.01 ? 0.05 : 5.0;      // 3D buffer rebuilds cost more
+  while (n-- > 0) {
+    rk4(s, dt);
+    checkBurst(s);
+    ll = simLatLon(s);
+    const ground = terrainAt(ll[0], ll[1]) ?? s.ground0;
+    // strictly descending: a rocket sitting on the pad has zero vertical speed
+    // at ignition and must not count as having landed on its own launch site
+    if (simAlt(s) <= ground && V3.dot(s.v, V3.unit(s.r)) < 0) {
+      pushTrack(ll); pushTrack3d(ll, ground); updateHud(s, ll, ground, true);
+      return land(s, ll, ground);
+    }
+    if (s.t - s.lastTrackT >= trackEvery) { pushTrack(ll); s.lastTrackT = s.t; }
+    if (s.t - s.lastTrack3dT >= track3dEvery) { pushTrack3d(ll, simAlt(s)); s.lastTrack3dT = s.t; }
+    liveTail = { ll, alt: simAlt(s) };   // the not-yet-sampled last segment
+    if (n % 500 === 0 && terrainMaintenance(s, ll)) break;
+  }
+  // never-coming-down checks: hovering at equilibrium, or absurd sim time
+  const groundNow = terrainAt(ll[0], ll[1]) ?? s.ground0;
+  const vU = V3.dot(s.v, V3.unit(s.r));
+  if (s.phase === "balloon" && simAlt(s) - groundNow > 200 && Math.abs(vU) < 0.03) {
+    if (s.calmSince == null) s.calmSince = s.t;
+    if (s.t - s.calmSince > 600)
+      return declareFloating(s, `Buoyancy balanced at ${Math.round(simAlt(s))} m MSL; ` +
+        `vertical speed ~0 for 10 min of sim time. It never reaches a burst condition.`);
+  } else s.calmSince = null;
+  if (s.t > 6*3600)
+    return declareFloating(s, s.orbit
+      ? `In orbit: ${Math.round(s.orbit.perigee/1000)} x ${Math.round(s.orbit.apogee/1000)} km, ` +
+        `${s.orbit.vInertial.toFixed(0)} m/s inertial, ${Math.round(s.orbit.propLeft)} kg deorbit reserve. ` +
+        `It is not coming down on its own.`
+      : "Still airborne after 6 h of simulated time; giving up on a landing.");
+  updateHud(s, ll, groundNow, false);
+}
+
+// the ground shadow of a track point: local terrain where known, else the
+// launch ground; lifted a touch so it never z-fights the tile surface
+function shadowH(la, lo) {
+  return (terrainAt(la, lo) ?? (sim && sim.ground0) ?? launch.groundElev ?? 0) + 1.5;
+}
+function pushTrack(ll) {   // 2D ground shadow of the flight path
+  trackShadow.push([ll[0], ll[1], shadowH(ll[0], ll[1])]);
+  globe.setLines("shadow", [trackShadow], [0.19, 0.44, 0.75, 0.75], 2.5);
+}
+// The stored track is sampled every track3dEvery seconds, so between samples the
+// drawn line stops short of the object: at speed that gap is most of the screen
+// and the last stretch looks blank. Keep the sample rate for the stored history
+// and append ONE live segment from the last sample to where the object is right
+// now, redrawn every frame.
+let liveTail = null;
+function drawTrackLive() {
+  if (!track3d || !liveTail) return;
+  const tip = [liveTail.ll[0], liveTail.ll[1], liveTail.alt];
+  line3d.setLines("track", [track3d.concat([tip])], [0.29, 0.56, 0.85, 0.95], 2.5);
+  if (trackShadow)                                // the ground shadow too
+    globe.setLines("shadow",
+      [trackShadow.concat([[liveTail.ll[0], liveTail.ll[1], shadowH(liveTail.ll[0], liveTail.ll[1])]])],
+      [0.19, 0.44, 0.75, 0.75], 2.5);
+}
+
+function pushTrack3d(ll, altMsl) {
+  // real MSL altitudes on real terrain: the old launch-ground display datum
+  // (and the kinks lazy terrain data put into it) is gone
+  track3d.push([ll[0], ll[1], altMsl]);
+  line3d.setLines("track", [track3d], [0.29, 0.56, 0.85, 0.95], 2.5);
+}
+
+function fmtClock(t) {
+  const h = Math.floor(t/3600), m = Math.floor((t%3600)/60), sec = Math.floor(t%60);
+  if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
+  return `${m}:${String(sec).padStart(2,"0")}`;
+}
+function fmtDist(d) { return d >= 10000 ? (d/1000).toFixed(1) + " km" : Math.round(d) + " m"; }
+
+// velocity arrow: direction = ground-track bearing, length = GROUND speed
+// (horizontal component) times a per-preset pixel scale, so a 47 m/s pitch
+// and a 3 m/s balloon drift both draw a readable arrow. The label next to
+// the position dot shows TOTAL speed (3D, including vertical).
+const VEL_SCALE = { balloon: 12, ball: 3 };   // screen px per m/s
+// A 3D arrow from an ECEF point along a unit direction: shaft plus four
+// barbs (two per perpendicular axis), so the head reads from any angle
+// rather than vanishing when the camera lines up with one barb plane.
+function arrow3dPolys(P, dir, len) {
+  const tip = V3.add(P, V3.scale(dir, len));
+  let side = V3.cross(dir, V3.unit(P));
+  if (V3.norm(side) < 1e-6) side = V3.cross(dir, [0, 0, 1]);   // straight up/down
+  side = V3.unit(side);
+  const other = V3.unit(V3.cross(side, dir));
+  const back = V3.scale(dir, -0.25*len), out = 0.12*len;
+  const toLLA = q => { const a = rToLLA(q); return [a.lat, a.lon, a.h]; };
+  const polys = [[toLLA(P), toLLA(tip)]];
+  for (const b of [side, V3.scale(side, -1), other, V3.scale(other, -1)])
+    polys.push([toLLA(V3.add(tip, V3.add(back, V3.scale(b, out)))), toLLA(tip)]);
+  return polys;
+}
+// Two arrows, each on the marker it belongs to: the GROUND-PROJECTED grey
+// dot carries the horizontal component (that is what a ground shadow is),
+// and the object itself carries the true 3D velocity, so the vertical part
+// of the flight is finally visible as an arrow instead of only as a number
+// in the label. Same pixels-per-m/s scale for both, so the ground arrow is
+// visibly the projection of the object's.
+function renderVelArrow(s, ll, h, ground) {
+  if (!velArrowState) return;
+  const a = velArrowState;
+  const scale = VEL_SCALE[a.ptype] || 6;
+  if (a.hs >= 0.05) {
+    const len = Math.min(scale*a.hs, 200) * globe.mppAt(a.lat, a.lon, ground);
+    line3d.setLines("velg", arrowPolys(a.lat, a.lon, a.brg, len, ground + 1.5),
+                    [0.31, 0.82, 0.77, 0.55], 2.5);
+  } else line3d.clear("velg");
+  const sp = V3.norm(s.v);
+  if (sp >= 0.05) {
+    const len = Math.min(scale*sp, 200) * globe.mppAt(a.lat, a.lon, h);
+    line3d.setLines("vel", arrow3dPolys(s.r, V3.scale(s.v, 1/sp), len),
+                    [0.31, 0.82, 0.77, 0.95], 3);
+  } else line3d.clear("vel");
+}
+
+// Everything that MOVES with the object, refreshed every rendered frame.
+// This used to live inside updateHud behind its 10 Hz text throttle, so the
+// blue dot, its drop line and the arrows all advanced in 100 ms jumps while
+// the track they left behind was drawn smoothly: the object stuttered
+// against its own trail (RW, 2026-08-16).
+function placeObjectGraphics(s) {
+  const ll = simLatLon(s), h = simAlt(s);
+  const ground = terrainAt(ll[0], ll[1]) ?? s.ground0;
+  if (objMarker) objMarker.setPos(ll[0], ll[1], ground);
+  line3d.tagPoint = [ll[0], ll[1], h];
+  const { east, north } = enuAt(s.r);
+  const vE = V3.dot(s.v, east), vN = V3.dot(s.v, north);
+  const hs = Math.hypot(vE, vN);
+  velArrowState = { lat: ll[0], lon: ll[1], hs, ptype: s.p.ptype,
+                    brg: (Math.atan2(vE, vN)*180/Math.PI + 360) % 360 };
+  renderVelArrow(s, ll, h, ground);
+  if (simStatus === "flying") {
+    // drop-line to the terrain below, plus a small cross marking the object
+    // itself at altitude (the DOM dot with the label is the ground shadow)
+    const cs = 7 * globe.mppAt(ll[0], ll[1], h);
+    const [eN] = [destPoint(ll[0], ll[1], 0, cs)], eS = destPoint(ll[0], ll[1], 180, cs),
+          eE = destPoint(ll[0], ll[1], 90, cs), eW = destPoint(ll[0], ll[1], 270, cs);
+    line3d.setLines("drop", [
+      [[ll[0], ll[1], h], [ll[0], ll[1], ground]],
+      [[eN[1], eN[0], h], [eS[1], eS[0], h]],
+      [[eE[1], eE[0], h], [eW[1], eW[0], h]],
+    ], [1, 1, 1, 0.45], 1.5);
+  }
+}
+
+let lastHud = 0;
+function updateHud(s, ll, ground, force) {   // text only; positions above
+  const now = performance.now();
+  if (!force && now - lastHud < 100) return;
+  lastHud = now;
+  const h = simAlt(s);
+  const { east, north, up } = enuAt(s.r);
+  const vE = V3.dot(s.v, east), vN = V3.dot(s.v, north), vU = V3.dot(s.v, up);
+  const hs = Math.hypot(vE, vN);
+  const w = windAt(h);
+  const air = Math.hypot(vE - w.u, vN - w.v, vU);
+  const total = Math.hypot(hs, vU);
+  const pitch = Math.atan2(vU, hs) * 180/Math.PI;
+  const brg = (Math.atan2(vE, vN)*180/Math.PI + 360) % 360;
+  $("objTag").textContent = `${Math.round(h)} m MSL · ${total.toFixed(1)} m/s`;
+  if (hs > 0.05) $("headingOut").textContent = brg.toFixed(0) + "°";
+  $("hudPitch").textContent = (pitch >= 0 ? "+" : "") + pitch.toFixed(1) + "°";
+  $("hudAgl").textContent = Math.round(h - ground) + " m";
+  $("hudMsl").textContent = Math.round(h) + " m";
+  $("hudAir").textContent = air.toFixed(1) + " m/s";
+  $("hudGnd").textContent = hs.toFixed(1) + " m/s";
+  $("hudVs").textContent = (vU >= 0 ? "+" : "") + vU.toFixed(1) + " m/s";
+  $("hudDist").textContent = fmtDist(surfDist(s.lat0, s.lon0, ll[0], ll[1]));
+  // Mach and the live drag coefficient: on a G1/G7 preset you can watch Cd
+  // climb through the transonic peak and fall away again as it slows
+  const mach = air / SOUND(atmAt(h).T);
+  $("hudMach").textContent = s._cd != null
+    ? mach.toFixed(2) + " \u00b7 " + s._cd.toFixed(3)
+    : mach.toFixed(2) + " \u00b7 \u2013";
+  const tenths = Math.floor((s.t - Math.floor(s.t)) * 10);
+  $("clock").innerHTML = fmtClock(s.t) + (s.t < 3600 ? `<small>.${tenths}</small>` : "");
+}
+
+/* ---------- UI wiring ---------- */
+function applyPreset(name) {
+  const pr = PRESETS[name];
+  for (const f of PRESET_FIELDS) {
+    if (!(f in pr)) continue;
+    const el = $(FIELD_IDS[f]);
+    if (el.type === "checkbox") el.checked = pr[f]; else el.value = pr[f];
+  }
+  $("timeSpeed").value = pr.timeSpeed;
+  $("balloonParams").style.display = pr.ptype === "balloon" ? "" : "none";
+  $("ballParams").style.display = pr.ptype === "ball" ? "" : "none";
+  // an aimless preset ignores heading and launch angle, so say so in the panel
+  const aimless = !!pr.aimless;
+  $("angle").disabled = aimless;
+  $("angle").title = aimless ? "not used: the balloon is released, not aimed" : "";
+  for (const id of ["headingRow", "angleRow"]) {
+    const row = $(id); if (row) row.style.opacity = aimless ? "0.45" : "";
+  }
+  $("aimNote").style.display = aimless ? "" : "none";
+  if (pr.site) {                       // fly the camera to the launch site
+    $("aimNote").textContent = "Launches from " + pr.site.name
+      + " on a " + pr.azimuth + " deg azimuth. Click anywhere to start the count.";
+    $("aimNote").style.display = "";
+    cam.lat = pr.site.lat - 0.03; cam.lon = pr.site.lon - 0.03;
+    cam.alt = 2500; cam.yaw = 45; cam.pitch = -25;
+    camVel[0] = camVel[1] = camVel[2] = 0;
+  } else if (aimless) {
+    $("aimNote").textContent = "Released, not aimed: one click places it and lets go.";
+  }
+  const dm = $("dragModelOut");
+  if (dm) dm.textContent = pr.dragModel && pr.dragModel !== "fixed"
+    ? pr.dragModel.toUpperCase() + " curve, BC " + pr.bc
+    : "fixed Cd";
+  updateBadge();
+}
+function updateBadge() {
+  const pr = PRESETS[$("preset").value], cur = readParams();
+  let diff = false;
+  for (const f of PRESET_FIELDS)
+    if (f in pr && String(pr[f]) !== String(cur[f])) { diff = true; break; }
+  $("badge").textContent = diff ? "modified" : "";
+}
+$("preset").addEventListener("change", () => { clearRun(); applyPreset($("preset").value); });
+for (const f of PRESET_FIELDS) $(FIELD_IDS[f]).addEventListener("input", () => {
+  if (f === "ptype") {
+    $("balloonParams").style.display = $("ptype").value === "balloon" ? "" : "none";
+    $("ballParams").style.display = $("ptype").value === "ball" ? "" : "none";
+  }
+  updateBadge();
+});
+$("playPause").addEventListener("click", togglePause);
+// Real wind is the default, because it is the honest setting and the one
+// that makes a balloon flight interesting. A forecast fetch can fail
+// (offline, API down, a location the service will not serve), so failure
+// falls back to the manual vector rather than silently flying through
+// still air: windAt() already reads the manual inputs whenever no profile
+// is loaded, so the physics is safe either way; this just makes the panel
+// tell the truth about which one is in force.
+function useManualWind(why) {
+  $("windManual").checked = true;
+  $("windManualBox").style.display = ""; $("windCurrentBox").style.display = "none";
+  if (why) { $("windNote").textContent = why; $("windNote").style.display = ""; }
+}
+function useCurrentWind() {
+  $("windManualBox").style.display = "none"; $("windCurrentBox").style.display = "";
+  $("windNote").style.display = "none";
+}
+// fetch with the shared fallback; keeps an older profile if there is one
+function loadWind(la, lo) {
+  return fetchWindProfile(la, lo).catch(() => {
+    if (windProfile) $("windStatus").textContent = "fetch failed, using the last profile";
+    else useManualWind("Wind forecast unavailable, using the manual wind below.");
+  });
+}
+$("windManual").addEventListener("change", () => {
+  $("windManualBox").style.display = ""; $("windCurrentBox").style.display = "none";
+  $("windNote").style.display = "none";
+});
+$("windCurrent").addEventListener("change", () => {
+  useCurrentWind();
+  const la = launch.lat ?? cam.lat, lo = launch.lon ?? cam.lon;
+  if (windProfileStale(la, lo)) loadWind(la, lo);
+});
+$("fetchWind").addEventListener("click", () =>
+  loadWind(launch.lat ?? cam.lat, launch.lon ?? cam.lon));
+
+applyPreset("pistol");
+fetchElevBatch([[SPAWN.lat, SPAWN.lon]]);   // warm the cache for the spawn area
+loadWind(SPAWN.lat, SPAWN.lon);             // current wind by default
+requestAnimationFrame(tick);
+
+// introspection hooks for automated verification (pointer lock needs a real
+// user gesture, so tests drive the camera and the launch ladder directly)
+window.__sim = {
+  get sim() { return sim; }, get simStatus() { return simStatus; },
+  get launchStage() { return launchStage; }, get launch() { return launch; },
+  get windProfile() { return windProfile; }, get mapReady() { return mapReady; },
+  get cam() { return cam; }, get line3dOk() { return line3d.ok; },
+  globe, terrainAt, isa, windAt, simAlt: () => sim ? simAlt(sim) : null,
+  setCam: (la, lo, alt, yaw, pitch) => {
+    cam.lat = la; cam.lon = lo; cam.alt = alt; cam.yaw = yaw; cam.pitch = pitch;
+  },
+  place: (la, lo) => placeLaunch(la, lo),                  // -> heading stage
+  aimHeading: brg => { launch.heading = brg;
+    $("headingOut").textContent = brg.toFixed(0) + "°"; enterAngleStage(); },
+  launchNow: () => doFire(),
+  fireAt: (la, lo) => { launch.heading = bearingDeg(launch.lat, launch.lon, la, lo);
+    return doFire(); },
+};
+</script>
+</body>
+</html>
