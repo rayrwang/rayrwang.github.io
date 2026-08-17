@@ -147,7 +147,7 @@
       <div id="clock">0:00<small>.0</small></div>
       <span id="pauseFlag" style="display:none; color:#f6ad55; font-size:11px">paused</span>
     </div>
-    <div class="hint" style="margin:3px 0 0">T pauses the sim.</div>
+    <div class="hint" style="margin:3px 0 0">T pauses the sim. F1 hides the menus.</div>
   </div>
 
   <details id="paramsBox">
@@ -188,6 +188,7 @@
   <div class="hudrow"><span>From launch</span><span id="hudDist">&ndash;</span></div>
   <div class="hudrow"><span>Mach &middot; Cd</span><span id="hudMach">&ndash;</span></div>
   <label style="margin-top:5px"><span>Follow object</span><input id="followToggle" type="checkbox"></label>
+  <div class="hint" style="margin:3px 0 0">F toggles follow.</div>
 </div>
 
 <div id="bottomStack">
@@ -1164,6 +1165,16 @@ let ghostMarker = null;
 
 function setHint(t) { $("stateHint").textContent = t; }
 
+// F1: hide the panels for a clean view. The scene keeps its own overlays
+// (markers, object tag, crosshair) and the attribution stays because the
+// OSM licence requires it on screen.
+let menusHidden = false;
+function toggleMenus() {
+  menusHidden = !menusHidden;
+  for (const id of ["ctl", "hud", "bottomStack"])
+    $(id).style.display = menusHidden ? "none" : "";
+}
+
 // The bottom bar follows the click-to-launch pipeline instead of vanishing
 // the moment the pointer is captured. Each stage says what the next click
 // does, and the two presets that break the three-step pattern say so:
@@ -1443,8 +1454,11 @@ function togglePause() {
   setPauseUi();
 }
 document.addEventListener("keydown", e => {
+  // F1 works regardless of focus (and must beat the browser's help page)
+  if (e.code === "F1") { e.preventDefault(); if (!e.repeat) toggleMenus(); return; }
   const tag = (document.activeElement || {}).tagName;
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  if (e.code === "KeyF" && !e.repeat) $("followToggle").checked = !$("followToggle").checked;
   // Esc hands the camera back: drop the chase before anything else, so one
   // press during a flight returns you to free flight rather than only
   // releasing the pointer
