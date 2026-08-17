@@ -787,6 +787,19 @@ const WALK = 11, SPRINT = 26, ACCEL = 90, CAMDRAG = 0.0016;   // nettlecombe con
 // 5 km -> 5.8 km/s, 10 -> 16, 20 -> 49, 30 -> 104, 50 -> 291, 100 -> 1349,
 // cap 5000 km/s reached ~180 km.
 const SPD_KNEE = 2000, SPD_CURV = 0.17, SPD_MAX = 5e6;
+// Floor for both fly ramps. The ramp is proportional to height above
+// ground, so at the terrain clamp (2 m) it fell to a crawl: the last few
+// metres of a descent took as long as the kilometres above them. 25 m/s
+// walking, 60 sprinting, is enough to still place a pin precisely.
+const SPD_MIN = 25;
+// One height above terrain for every ground-anchored graphic: the launch
+// pin, the ghost pin, the landing X, the aim arrows, the ground-shadow
+// dot and its track. They used to sit at five different lifts (0, 1, 1.5
+// and 2 m), which read as the arrows and the flight path floating above
+// the red pin (RW, 2026-08-17). Lines need SOME lift or they z-fight the
+// terrain mesh, so the fix is one shared value, not zero. It also equals
+// the usual release height, so a pistol's path now leaves the pin exactly.
+const GROUND_LIFT = 1.5;
 const LOOK_SENS = 0.0022 * 180/Math.PI;   // deg per px, same 0.0022 rad
 const PITCH_LIM = 1.553 * 180/Math.PI;    // 88.97 deg
 const camVel = [0, 0, 0];                 // ENU m/s
@@ -873,7 +886,7 @@ function moveCamera(dt) {
   // Below the knee it is exactly linear, and the curve steepens smoothly from
   // there with no kink, which a piecewise ramp would give.
   const u = Math.max(0, Math.log(agl/SPD_KNEE));
-  const scale = Math.min(Math.max(agl*Math.exp(SPD_CURV*u*u), 4), SPD_MAX) / WALK * speedMult;
+  const scale = Math.min(Math.max(agl*Math.exp(SPD_CURV*u*u), SPD_MIN), SPD_MAX) / WALK * speedMult;
   // VERTICAL gets its own, gentler ramp: plain linear, the original "one second
   // to the ground" rule. Near the ground it therefore matches horizontal
   // exactly; higher up it falls further behind, because horizontal wants to
@@ -883,7 +896,7 @@ function moveCamera(dt) {
   // 30 km would descend at 200 km/s and pass through the whole atmosphere in an
   // eyeblink. Consequence, deliberate: at altitude W no longer follows the look
   // vector exactly, flying a shallower path than you are aiming.
-  const scaleV = Math.min(Math.max(agl, 4), SPD_MAX) / WALK * speedMult;
+  const scaleV = Math.min(Math.max(agl, SPD_MIN), SPD_MAX) / WALK * speedMult;
   const yawR = cam.yaw*Math.PI/180, pitR = cam.pitch*Math.PI/180;
   const cp = Math.cos(pitR);
   const fwd = [Math.sin(yawR)*cp, Math.cos(yawR)*cp, Math.sin(pitR)];   // full look vector
@@ -1122,7 +1135,7 @@ function updateGhost() {
   const pt = centerGroundPoint();
   if (!pt) { hideGhost(); return; }
   const g = ensureGhost();
-  g.setPos(pt.lat, pt.lng, pt.h);
+  g.setPos(pt.lat, pt.lng, pt.h + GROUND_LIFT);
   g.el.style.display = "";
 }
 
@@ -1138,7 +1151,7 @@ function placeLaunch(lat, lon) {
   }
   launch.lat = lat; launch.lon = lon; launch.groundElev = null;
   if (!launch.marker) launch.marker = mkMarker("padIcon");
-  launch.marker.setPos(lat, lon, terrainAt(lat, lon) ?? HOME.elev);
+  launch.marker.setPos(lat, lon, (terrainAt(lat, lon) ?? HOME.elev) + GROUND_LIFT);
   launch.marker.el.style.display = "";
   hideGhost();
   resolveLaunchElev();
@@ -1198,7 +1211,7 @@ function resolveLaunchElev() {
     const e = terrainAt(la, lo);
     if (e != null && la === launch.lat) {
       launch.groundElev = e; $("groundOut").textContent = e.toFixed(0) + " m";
-      if (launch.marker) launch.marker.setPos(la, lo, e);   // settle onto terrain
+      if (launch.marker) launch.marker.setPos(la, lo, e + GROUND_LIFT);   // settle onto terrain
     }
   });
 }
@@ -1214,7 +1227,7 @@ function updateAimArrow() {
   $("headingOut").textContent = brg.toFixed(0) + "°";
   const h = launch.groundElev ?? terrainAt(launch.lat, launch.lon) ?? 0;
   const len = 70 * globe.mppAt(launch.lat, launch.lon, h);   // ~70 px on screen
-  globe.setLines("aim", arrowPolys(launch.lat, launch.lon, brg, len, h + 2),
+  globe.setLines("aim", arrowPolys(launch.lat, launch.lon, brg, len, h + GROUND_LIFT),
                  [1.0, 0.83, 0.47, 0.9], 3);
 }
 
@@ -1232,7 +1245,7 @@ function nudgeAngle(deg) {
 function updateAimUpArrow() {
   if (launchStage !== "angle") return;
   const a = (+$("angle").value || 0) * Math.PI/180;
-  const g0 = (launch.groundElev ?? terrainAt(launch.lat, launch.lon) ?? 0) + 1;
+  const g0 = (launch.groundElev ?? terrainAt(launch.lat, launch.lon) ?? 0) + GROUND_LIFT;
   const L = 70 * globe.mppAt(launch.lat, launch.lon, g0);
   const seg = (hDist, dAlt) => {
     const [lo, la] = destPoint(launch.lat, launch.lon, launch.heading, hDist);
@@ -1488,7 +1501,7 @@ async function doFire() {
   sim = s; simStatus = "flying";
   playing = true; stepCarry = 0;
   setPauseUi();
-  trackShadow = [[launch.lat, launch.lon, g0 + 1.5]];
+  trackShadow = [[launch.lat, launch.lon, g0 + GROUND_LIFT]];
   track3d = [[launch.lat, launch.lon, g0 + p.relH]];
   // the dot marker is the object's GROUND SHADOW, demoted to a small grey
   // disc; the object itself is the blue #objDot billboard riding the 3D
@@ -1741,7 +1754,7 @@ function land(s, ll, ground) {
   const impact = V3.norm(s.v);
   const straight = surfDist(s.lat0, s.lon0, ll[0], ll[1]);
   landMarker = mkMarker("", LAND_SVG);
-  landMarker.setPos(ll[0], ll[1], ground);
+  landMarker.setPos(ll[0], ll[1], ground + GROUND_LIFT);
   if (objMarker) { objMarker.remove(); objMarker = null; }
   line3d.clear("drop"); line3d.clear("vel"); line3d.clear("velg");
   line3d.tagPoint = null; $("objTag").style.display = "none"; $("objDot").style.display = "none";
@@ -1846,7 +1859,7 @@ function tick(ts) {
 // the ground shadow of a track point: local terrain where known, else the
 // launch ground; lifted a touch so it never z-fights the tile surface
 function shadowH(la, lo) {
-  return (terrainAt(la, lo) ?? (sim && sim.ground0) ?? launch.groundElev ?? 0) + 1.5;
+  return (terrainAt(la, lo) ?? (sim && sim.ground0) ?? launch.groundElev ?? 0) + GROUND_LIFT;
 }
 function pushTrack(ll) {   // 2D ground shadow of the flight path
   trackShadow.push([ll[0], ll[1], shadowH(ll[0], ll[1])]);
@@ -1915,7 +1928,7 @@ function renderVelArrow(s, ll, h, ground) {
   const scale = VEL_SCALE[a.ptype] || 6;
   if (a.hs >= 0.05) {
     const len = Math.min(scale*a.hs, 200) * globe.mppAt(a.lat, a.lon, ground);
-    line3d.setLines("velg", arrowPolys(a.lat, a.lon, a.brg, len, ground + 1.5),
+    line3d.setLines("velg", arrowPolys(a.lat, a.lon, a.brg, len, ground + GROUND_LIFT),
                     [0.31, 0.82, 0.77, 0.55], 2.5);
   } else line3d.clear("velg");
   const sp = V3.norm(s.v);
@@ -1934,7 +1947,7 @@ function renderVelArrow(s, ll, h, ground) {
 function placeObjectGraphics(s) {
   const ll = simLatLon(s), h = simAlt(s);
   const ground = terrainAt(ll[0], ll[1]) ?? s.ground0;
-  if (objMarker) objMarker.setPos(ll[0], ll[1], ground);
+  if (objMarker) objMarker.setPos(ll[0], ll[1], ground + GROUND_LIFT);
   line3d.tagPoint = [ll[0], ll[1], h];
   const { east, north } = enuAt(s.r);
   const vE = V3.dot(s.v, east), vN = V3.dot(s.v, north);
