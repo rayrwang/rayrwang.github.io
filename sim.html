@@ -218,11 +218,6 @@
 
 /* ---------- constants and presets ---------- */
 
-// Default view: 15 Woodvalley Court, Hamilton, Ontario L9B 0A8.
-// Geocoded once at build time via Nominatim (2026-08-16):
-//   osm node 1134738568, lat 43.2162434, lon -79.9210535
-const HOME = { lat: 43.2162434, lon: -79.9210535, elev: 236 };  // elev per Open-Meteo
-
 const R_AIR = 287.053;    // specific gas constant, dry air, J/(kg K)
 const R_HE = 2077.1;      // specific gas constant, helium, J/(kg K)
 const R_EARTH = 6371000;  // mean earth radius, m; MSL is the sphere |r| = R_EARTH
@@ -910,7 +905,7 @@ const LOOK_SENS = 0.0022 * 180/Math.PI;   // deg per px, same 0.0022 rad
 const PITCH_LIM = 1.553 * 180/Math.PI;    // 88.97 deg
 const camVel = [0, 0, 0];                 // ENU m/s
 const keys = new Set();
-let locked = false, speedMult = 1, camFetchPos = [HOME.lat, HOME.lon];
+let locked = false, speedMult = 1, camFetchPos = [SPAWN.lat, SPAWN.lon];
 let sprintLatch = false, lastW = 0;
 
 const canvas = () => glc;
@@ -1270,7 +1265,7 @@ function placeLaunch(lat, lon) {
   }
   launch.lat = lat; launch.lon = lon; launch.groundElev = null;
   if (!launch.marker) launch.marker = mkMarker("padIcon");
-  launch.marker.setPos(lat, lon, (terrainAt(lat, lon) ?? HOME.elev) + GROUND_LIFT);
+  launch.marker.setPos(lat, lon, (terrainAt(lat, lon) ?? 0) + GROUND_LIFT);
   launch.marker.el.style.display = "";
   hideGhost();
   resolveLaunchElev();
@@ -2342,7 +2337,7 @@ async function citySearch(q) {
   for (const p of res) {
     const d = document.createElement("div");
     // short label: name, state, country; Nominatim's display_name inserts
-    // every intermediate region ("Hamilton, Golden Horseshoe, Ontario,
+    // every intermediate region ("Toronto, Golden Horseshoe, Ontario,
     // Canada"), so build from the structured address instead and keep the
     // full hierarchy as hover text
     const a = p.address || {};

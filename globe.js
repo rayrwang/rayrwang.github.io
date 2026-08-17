@@ -552,8 +552,8 @@ class Globe {
   // rebuild stamp: tile identity + loaded state. A mesh goes stale exactly
   // when this string changes, and in no other case; the old scheme stamped
   // only the deepest loaded tile at the CENTER, so a mesh whose edge
-  // vertices had fallen back to a coarse grid (wrong by up to ~100 m
-  // around the escarpment: RW's terrain pyramids) never rebuilt.
+  // vertices had fallen back to a coarse grid (wrong by up to ~100 m on
+  // steep relief: the terrain-pyramid bug) never rebuilt.
   _hgtTileFor(z, x, y) {
     const tz = Math.min(z, TERRAIN_Z);
     const tx = x >> (z - tz), ty = y >> (z - tz);
