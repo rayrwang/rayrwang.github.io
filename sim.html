@@ -1601,7 +1601,10 @@ async function doFire() {
   track3d = [[launch.lat, launch.lon, g0 + p.relH]];
   // the dot marker is the object's GROUND SHADOW, demoted to a small grey
   // disc; the object itself is the blue #objDot billboard riding the 3D
-  // point (plus the faint 3D cross), label beside it
+  // point (plus the faint 3D cross), label beside it. Remove any previous
+  // flight's dot first: firing again without a fresh placement (a double
+  // click on the fire stage) used to orphan the old marker on the map
+  if (objMarker) { objMarker.remove(); objMarker = null; }
   const wrap = mkEl("gmk posWrap");
   const dot = mkEl("dot");
   dot.style.background = "#6b7280";
