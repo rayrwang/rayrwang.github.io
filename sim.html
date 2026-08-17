@@ -814,9 +814,9 @@ function windProfileStale(lat, lon) {
 // and its 1.2 s politeness queue: lookups are now synchronous once a tile is
 // resident, and ensureTerrain() resolves when coverage arrives.
 function terrainAt(la, lo) { return globe.terrainAt(la, lo); }
-function fetchElevBatch(points) { return globe.ensureTerrain(points); }
+function fetchElevBatch(points) { lastElevFetch = Date.now(); return globe.ensureTerrain(points); }
 // inert compatibility gates (the old API queue needed them; local tiles don't)
-let elevBusy = false, lastElevFetch = 0;
+let lastElevFetch = 0;
 
 /* ---------- the renderer: own WebGL2 globe (globe.js) ---------- */
 // ECEF camera + terrain-displaced OSM tiles on the same R_EARTH sphere the
@@ -1062,7 +1062,7 @@ function moveCamera(dt) {
   const floor = camGround() + 2;
   if (cam.alt < floor) { cam.alt = floor; if (camVel[2] < 0) camVel[2] = 0; }
   if (V3.norm(camVel)*dt > 0.001 && surfDist(cam.lat, cam.lon, camFetchPos[0], camFetchPos[1]) > 1500
-      && !elevBusy && Date.now() - lastElevFetch > 1500) {
+      && Date.now() - lastElevFetch > 1500) {
     camFetchPos = [cam.lat, cam.lon];             // terrain under the flight path
     const pts = [[cam.lat, cam.lon]];
     for (const ahead of [2, 5]) {
@@ -1619,7 +1619,10 @@ async function doFire() {
   if (launch.groundElev == null && launchElevPromise) await launchElevPromise;
   const g0 = launch.groundElev ?? 0;
   if ($("windCurrent").checked && windProfileStale(launch.lat, launch.lon))
-    await loadWind(launch.lat, launch.lon);
+    // bounded: a slow weather API must not hold the launch; loadWind's own
+    // fallback path keeps the panel honest about which wind is in force
+    await Promise.race([loadWind(launch.lat, launch.lon),
+                        new Promise(r => setTimeout(r, 4000))]);
   launchStage = "free";
   line3d.clear("ghost"); line3d.clear("aimup");
   globe.clearLines("aim");
@@ -1878,7 +1881,7 @@ function terrainMaintenance(s, ll) {
   const agl = h - (known ?? s.ground0);
   const drifted = surfDist(ll[0], ll[1], s.lastTerrainCheckPos[0], s.lastTerrainCheckPos[1]) > 2000;
   const low = agl < 500;
-  if ((low || drifted || known == null) && !elevBusy && Date.now() - lastElevFetch > 1200) {
+  if ((low || drifted || known == null) && Date.now() - lastElevFetch > 1200) {
     s.lastTerrainCheckPos = ll;
     const { east, north, up } = enuAt(s.r);
     const vE = V3.dot(s.v, east), vN = V3.dot(s.v, north), vU = V3.dot(s.v, up);
@@ -1971,7 +1974,9 @@ function tick(ts) {
   // never lands, and it outruns the tile loader by design, so holding for
   // elevation just froze the ring for whole frames at speed.
   if (s.phase !== "sound" && terrainMaintenance(s, ll)) {
-    setHint("Waiting for terrain data..."); return;
+    setHint(globe.terrainState(ll[0], ll[1]) === "failed"
+      ? "Terrain fetch failed, retrying..." : "Waiting for terrain data...");
+    return;
   }
 
   stepCarry += speed*realDt/dt;

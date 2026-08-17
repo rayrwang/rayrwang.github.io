@@ -32,6 +32,7 @@ const TEX_CAP = 700;                   // LRU imagery textures
 const HGT_CAP = 320;                   // LRU terrain grids
 const MAX_IMG_INFLIGHT = 10;
 const MAX_HGT_INFLIGHT = 6;
+const HGT_RETRY_MS = 1500;    // backoff before refetching a failed tile
 const LOG_FAR = 1e8;                   // log-depth far plane, m
 const MAXLAT = 85.05112877980659;      // web-mercator latitude limit
 
@@ -439,6 +440,15 @@ class Globe {
       // an explicit caller can promote a queued scenery request
       if (urgent && !e.grid && !e.loading && this.wantHgt.has(key))
         this.wantHgtUrgent.add(key);
+      // a failed fetch becomes retryable after a short backoff; without
+      // this, one transient network error blackholed the tile for the whole
+      // session and the flight hold ("Waiting for terrain data...") never
+      // released
+      if (e.failed && !e.loading && Date.now() - e.failedAt > HGT_RETRY_MS) {
+        e.failed = false;
+        e.promise = new Promise(res => e.waiters.push(res));
+        (urgent ? this.wantHgtUrgent : this.wantHgt).add(key);
+      }
       return e;
     }
     e = { grid: null, frame: this.frame, waiters: [], promise: null };
@@ -495,7 +505,7 @@ class Globe {
           this.stats.hgtLoads++;
           done();
         })
-        .catch(() => { e.failed = true; done(); });
+        .catch(() => { e.failed = true; e.failedAt = Date.now(); done(); });
     }
     // LRU
     if (this.heights.size > HGT_CAP) {
@@ -527,6 +537,15 @@ class Globe {
       return this._sampleGrid(e.grid, z, x, y, lat, lon);
     }
     return null;
+  }
+  // state of the z12 tile under a point, for honest progress hints:
+  // "loaded" | "loading" | "failed" (in backoff) | "none" (never requested)
+  terrainState(lat, lon) {
+    const { z, x, y } = this._hgtKeyFor(lat, lon);
+    const e = this.heights.get(tkey(z, x, y));
+    if (!e) return "none";
+    if (e.grid) return "loaded";
+    return e.failed ? "failed" : "loading";
   }
   // the ONE terrain tile a z/x/y imagery tile's mesh samples (quadtree-
   // aligned, so the imagery tile lies entirely inside it), plus the exact
