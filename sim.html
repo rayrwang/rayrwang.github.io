@@ -106,6 +106,7 @@
       <option value="fifty">Rifle, .50 BMG M33 ball</option>
       <option value="yamato">Naval gun, Yamato 46 cm</option>
       <option value="paris">Paris Gun, 1918 (130 km)</option>
+      <option value="sound">Sound of a Krakatoa-sized bang</option>
       <option value="manhole">Manhole cover, Pascal-B (1957)</option>
       <option value="falcon9">Falcon 9, ascent to orbit</option>
     </select><span id="badge"></span></span>
@@ -152,7 +153,7 @@
   <details id="paramsBox">
     <summary>Parameters (preset-managed)</summary>
     <label><span>Projectile</span>
-      <select id="ptype"><option value="balloon">helium balloon</option><option value="ball">ball</option><option value="rocket">rocket (staged, powered)</option></select></label>
+      <select id="ptype"><option value="balloon">helium balloon</option><option value="ball">ball</option><option value="rocket">rocket (staged, powered)</option><option value="sound">sound wave</option></select></label>
     <label><span>Launch speed (m/s)</span><input id="speed" type="number" step="0.1" min="0"></label>
     <label><span>Release height (m AGL)</span><input id="relH" type="number" step="0.1" min="0"></label>
     <label><span>Integrator dt (s)</span><input id="dtStep" type="number" step="0.001" min="0.0005"></label>
@@ -460,6 +461,35 @@ const PRESETS = {
     mCd: 0.2,          // fallback only
     mRpm: 0,           // spin-stabilised about the long axis: no Magnus
     mCl: 0,
+  },
+  // Not a projectile at all: the bang itself. A sound wave leaves the point
+  // in every direction at once, so what expands is a ring on the ground
+  // rather than an object on an arc, and it travels at whatever the local
+  // speed of sound is (sqrt(1.4 R T), so it slows in cold air and speeds up
+  // in warm). Scale taken from Krakatoa, 27 August 1883, whose eruption was
+  // heard on Rodrigues Island 4,653 km away about four hours later: the
+  // loudest sound in the historical record and the furthest one ever
+  // documented as heard. The ring here stops at that distance, so the clock
+  // when it stops is a check rather than a setting, and it should read
+  // close to four hours.
+  sound: {
+    ptype: "sound",
+    aimless: true,     // a bang has no heading and no launch angle
+    speed: 0,          // the wave's speed comes from the air, not from you
+    angle: 0,
+    relH: 1.5,
+    dt: 0.01,          // s. The ring only moves when the sim steps, so the
+                       // step has to be shorter than a frame or it advances
+                       // in visible jumps; at 10 ms it grows 3.4 m at a time,
+                       // which is smooth at any frame rate and still cheap
+                       // because a wavefront step is one addition
+    drag: false,       // no drag on a wavefront: it is not an object
+    timeSpeed: 1,      // real time: the ring crosses the ground at the actual
+                       // speed of sound, which is the whole point of watching
+                       // it. The full four hours to Rodrigues needs the
+                       // arrow keys; 1000x covers it in about fifteen seconds
+    audibleKm: 4653,   // where Krakatoa was last heard
+    mMass: 0, mDiam: 0, mCd: 0, mRpm: 0, mCl: 0,
   },
   // Pascal-B, 27 August 1957: a nuclear test shaft capped with a steel plate,
   // which the blast fired straight up. The camera ran at one frame per
@@ -1161,6 +1191,9 @@ function flyHintHtml() {
     return "<b>Left click anywhere</b> starts the count &middot; " + pr.site.name
       + ", azimuth " + pr.azimuth + "&deg;. The pad and heading are part of the mission, "
       + "so where you click does not matter." + esc;
+  if (oneClick && pr.ptype === "sound")
+    return "<b>Left click</b> sets off the bang at the crosshair &middot; the ring expands "
+      + "in every direction at the speed of sound, so there is nothing to aim." + esc;
   if (oneClick)
     return "<b>Left click</b> releases it at the crosshair &middot; no heading or angle to "
       + "set, it goes where the air takes it." + esc;
@@ -1466,7 +1499,7 @@ function clearRun() {
   if (landMarker) { landMarker.remove(); landMarker = null; }
   globe.clearLines("shadow");
   line3d.clear("track"); line3d.clear("drop"); line3d.clear("vel");
-  line3d.clear("velg"); line3d.clear("ghost");
+  line3d.clear("velg"); line3d.clear("ghost"); globe.clearLines("soundring");
   line3d.tagPoint = null; $("objTag").style.display = "none"; $("objDot").style.display = "none";
   trackShadow = null; track3d = null; velArrowState = null; liveTail = null;
   $("landPanel").style.display = "none";
@@ -1489,7 +1522,7 @@ function readParams() {
     p.dragModel = pr.dragModel || "fixed"; p.bc = pr.bc || 0;
     for (const k of ["r1","r2","payload","fairing","fairingT","sepDelay","area",
                      "qStart","qEnd","qThrottle","gLimit","vertUntil","kickUntil",
-                     "kickDeg","targetAlt","guideTau","site","azimuth"])
+                     "kickDeg","targetAlt","guideTau","site","azimuth","audibleKm"])
       if (k in pr) p[k] = pr[k];
   }
   return p;
@@ -1508,11 +1541,16 @@ function makeState(p, lat, lon, g0, headingDeg, angleDeg, preview) {
   const s = {
     p, t: 0, lat0: lat, lon0: lon, ground0: g0, preview: !!preview,
     r: r0, v: v0,
-    phase: p.ptype === "balloon" ? "balloon" : (p.ptype === "rocket" ? "rocket" : "ball"),
+    phase: p.ptype === "balloon" ? "balloon"
+         : p.ptype === "rocket" ? "rocket"
+         : p.ptype === "sound" ? "sound" : "ball",
     trackLen: 0, calmSince: null, burstInfo: null,
     lastTrackT: -1, lastTrack3dT: -1, lastTerrainCheckPos: [lat, lon],
   };
-  if (p.ptype === "rocket") {
+  if (p.ptype === "sound") {
+    s.rad = 0;
+    s.azim = headingDeg;          // the bearing of the point the HUD follows
+  } else if (p.ptype === "rocket") {
     s.stage = 1; s.burning = true; s.done = false; s.fairingGone = false;
     s.azim = headingDeg;                    // the launch azimuth steers the turn
     s.mass = p.r1.dry + p.r1.prop + p.r2.dry + p.r2.prop + p.fairing + p.payload;
@@ -1659,7 +1697,29 @@ function accel(s, r, v) {
   return V3.add(V3.scale(F, 1/mEff), pseudo);
 }
 
+// A wavefront is not a projectile: it has no mass, feels no gravity and no
+// drag, and it expands in every direction at once. Integrating it as a point
+// with a velocity would be wrong twice over, because a horizontal velocity
+// with no centripetal force flies off the sphere. So the state it carries is
+// a RADIUS, advanced each step by the local speed of sound, and the object
+// the rest of the app tracks is one point on the front (bearing s.azim),
+// which keeps the HUD, the markers and the chase camera working unchanged.
+function stepSound(s, dt) {
+  const c = SOUND(atmAt(simAlt(s)).T);
+  s.rad += c*dt;
+  s.t += dt;
+  s.trackLen = s.rad;
+  const [lo, la] = destPoint(s.lat0, s.lon0, s.azim, s.rad);
+  const g = terrainAt(la, lo) ?? s.ground0;
+  s.r = llToR(la, lo, g + s.p.relH);
+  const { east, north } = enuAt(s.r);
+  const br = s.azim*Math.PI/180;
+  s.v = V3.add(V3.scale(east, Math.sin(br)*c), V3.scale(north, Math.cos(br)*c));
+  s._cd = null;
+}
+
 function rk4(s, dt) {
+  if (s.phase === "sound") return stepSound(s, dt);
   const r = s.r, v = s.v;
   const a1 = accel(s, r, v);
   const v2 = V3.add(v, V3.scale(a1, dt/2)), r2 = V3.add(r, V3.scale(v, dt/2));
@@ -1866,7 +1926,12 @@ function tick(ts) {
   const s = sim, dt = s.p.dt, speed = +$("timeSpeed").value;
 
   let ll = simLatLon(s);
-  if (terrainMaintenance(s, ll)) { setHint("Waiting for terrain data..."); return; }
+  // The terrain hold exists so nothing lands on stale ground. A wavefront
+  // never lands, and it outruns the tile loader by design, so holding for
+  // elevation just froze the ring for whole frames at speed.
+  if (s.phase !== "sound" && terrainMaintenance(s, ll)) {
+    setHint("Waiting for terrain data..."); return;
+  }
 
   stepCarry += speed*realDt/dt;
   let n = Math.min(Math.floor(stepCarry), MAX_STEPS_PER_FRAME);
@@ -1884,10 +1949,25 @@ function tick(ts) {
       pushTrack(ll); pushTrack3d(ll, ground); updateHud(s, ll, ground, true);
       return land(s, ll, ground);
     }
-    if (s.t - s.lastTrackT >= trackEvery) { pushTrack(ll); s.lastTrackT = s.t; }
-    if (s.t - s.lastTrack3dT >= track3dEvery) { pushTrack3d(ll, simAlt(s)); s.lastTrack3dT = s.t; }
-    liveTail = { ll, alt: simAlt(s) };   // the not-yet-sampled last segment
+    // A wavefront has no flight path worth drawing: the ring is the whole
+    // story, and at 1000x a 10 ms step would otherwise pile up thousands of
+    // track vertices per second along one meaningless radius.
+    if (s.phase !== "sound") {
+      if (s.t - s.lastTrackT >= trackEvery) { pushTrack(ll); s.lastTrackT = s.t; }
+      if (s.t - s.lastTrack3dT >= track3dEvery) { pushTrack3d(ll, simAlt(s)); s.lastTrack3dT = s.t; }
+      liveTail = { ll, alt: simAlt(s) };   // the not-yet-sampled last segment
+    }
     if (n % 500 === 0 && terrainMaintenance(s, ll)) break;
+  }
+  // the ring fades out rather than landing: stop where the real one was
+  // last heard, and report the clock as the check
+  if (s.phase === "sound" && s.rad >= (s.p.audibleKm ?? 4653)*1000) {
+    const c = SOUND(atmAt(simAlt(s)).T);
+    return declareFloating(s,
+      `Ring reached ${Math.round(s.rad/1000)} km after ${fmtClock(s.t)}, ` +
+      `travelling at ${c.toFixed(0)} m/s. Krakatoa was heard at this distance ` +
+      `about four hours after the eruption. Beyond here it is still moving, ` +
+      `just no longer loud enough to hear.`);
   }
   // never-coming-down checks: hovering at equilibrium, or absurd sim time
   const groundNow = terrainAt(ll[0], ll[1]) ?? s.ground0;
@@ -1923,6 +2003,7 @@ function pushTrack(ll) {   // 2D ground shadow of the flight path
 // now, redrawn every frame.
 let liveTail = null;
 function drawTrackLive() {
+  if (sim && sim.phase === "sound") return;
   if (!track3d || !liveTail) return;
   const tip = [liveTail.ll[0], liveTail.ll[1], liveTail.alt];
   line3d.setLines("track", [track3d.concat([tip])], [0.29, 0.56, 0.85, 0.95], 2.5);
@@ -1995,7 +2076,19 @@ function renderVelArrow(s, ll, h, ground) {
 // blue dot, its drop line and the arrows all advanced in 100 ms jumps while
 // the track they left behind was drawn smoothly: the object stuttered
 // against its own trail (RW, 2026-08-16).
+// the expanding ring: a circle of great-circle radius s.rad around the
+// launch point, following the ground, redrawn every frame
+function drawSoundRing(s) {
+  const N = 128, pts = [];
+  for (let i = 0; i <= N; i++) {
+    const [lo, la] = destPoint(s.lat0, s.lon0, i*360/N, s.rad);
+    pts.push([la, lo, (terrainAt(la, lo) ?? s.ground0) + GROUND_LIFT]);
+  }
+  globe.setLines("soundring", [pts], [0.23, 0.55, 0.99, 0.9], 3);
+}
+
 function placeObjectGraphics(s) {
+  if (s.phase === "sound") drawSoundRing(s);
   const ll = simLatLon(s), h = simAlt(s);
   const ground = terrainAt(ll[0], ll[1]) ?? s.ground0;
   if (objMarker) objMarker.setPos(ll[0], ll[1], ground + GROUND_LIFT);
