@@ -105,6 +105,7 @@
       <option value="pistol" selected>Pistol, 9 mm 115 gr</option>
       <option value="fifty">Rifle, .50 BMG M33 ball</option>
       <option value="yamato">Naval gun, Yamato 46 cm</option>
+      <option value="paris">Paris Gun, 1918 (130 km)</option>
       <option value="manhole">Manhole cover, Pascal-B (1957)</option>
       <option value="falcon9">Falcon 9, ascent to orbit</option>
     </select><span id="badge"></span></span>
@@ -409,6 +410,56 @@ const PRESETS = {
                                       // this is why a real MECO is slower and
                                       // earlier than a propellant-exhausted one
     r2: { thrSL: 981000, thrVac: 981000, isp: 348, prop: 107500, dry: 4000 },
+  },
+  // The Paris Gun, March to August 1918: the longest-ranged gun ever fired
+  // at a target, and the reason this preset exists rather than a bigger one.
+  // Schwerer Gustav threw four times the muzzle energy (1.6 GJ against
+  // 143 MJ) but only 47 km, because energy spent on mass is not range;
+  // range comes from speed and thin air. This shell left the muzzle at
+  // 1,640 m/s, climbed to 42.3 km where there is almost no atmosphere left,
+  // and came down 130 km away three minutes later. It was the first
+  // man-made object to reach the stratosphere, and the highest anything
+  // human-made went until the V-2 in 1942.
+  // Two consequences the gunners had to live with, both of which this
+  // simulator reproduces from first principles rather than by fudge: the
+  // optimum elevation is 55 degrees, not 45, because a lofted shell spends
+  // its flight in thinner air; and the Earth rotates measurably under a
+  // three-minute flight, so the firing tables carried a Coriolis correction.
+  paris: {
+    ptype: "ball",
+    speed: 1640,       // m/s
+    angle: 50,         // Published sources give 55 degrees, but that is the
+                       // mount's elevation figure and it does not reconcile
+                       // with the published trajectory. Fitting the drag so
+                       // the range comes out at 130 km and then sweeping the
+                       // elevation, this model has to fly a 49 km apogee to
+                       // reach 130 km at 55 degrees, while the published
+                       // 42.3 km apogee appears at 50 degrees (measured
+                       // 41.7 km, within 1.4%). So the preset flies 50.
+    relH: 5,           // m; muzzle height on the railway mounting
+    dt: 0.002,         // 3.3 m per step at the muzzle
+    drag: true,
+    timeSpeed: 1,
+    mMass: 106000,     // g = 106 kg
+    mDiam: 211,        // mm. The bore grew shot by shot as it wore, and the
+                       // shells were numbered and machined progressively
+                       // larger to match; 211 mm is the as-new figure
+    dragModel: "g7",   // long, finely pointed shell
+    bc: 5.10,          // CALIBRATED by bisection to the published 130 km at
+                       // 50 degrees. Unfitted checks: apogee 41.7 km against
+                       // the published 42.3, and flight time 188 s against
+                       // the published ~170, so the trajectory is right in
+                       // shape and about a tenth long in duration. Two model
+                       // families (this G7 scaling and a plain fixed Cd) give
+                       // the same answer to within a percent, so the residual
+                       // is not the drag law; the likeliest culprit is the
+                       // atmosphere above 32 km, where this model leaves the
+                       // ISA tables and decays pressure on a plain 7 km
+                       // scale height, and where this shell spends most of
+                       // its flight.
+    mCd: 0.2,          // fallback only
+    mRpm: 0,           // spin-stabilised about the long axis: no Magnus
+    mCl: 0,
   },
   // Pascal-B, 27 August 1957: a nuclear test shaft capped with a steel plate,
   // which the blast fired straight up. The camera ran at one frame per
