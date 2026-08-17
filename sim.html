@@ -211,6 +211,7 @@
 
 <div id="bottomStack">
   <div id="landPanel" class="panel"><b id="landTitle">Landed</b><div id="landStats"></div></div>
+  <div id="phasePanel" class="panel" style="display:none"></div>
   <div id="flyHint" class="panel"></div>
 </div>
 
@@ -402,7 +403,8 @@ const PRESETS = {
   // not occur; the orbit here is Keplerian for all purposes.
   iss: {
     ptype: "ball",
-    orbital: true,     // deploy horizontal at sqrt(GM/r) inertial; skip angle
+    orbital: true,     // deploy horizontal at sqrt(GM/r) inertial
+    noAngle: true,     // an orbit is horizontal by definition: no angle stage
     speed: 7670,       // m/s display; overridden by the exact circular value
     angle: 0,
     relH: 400000,      // m above the clicked ground point
@@ -419,14 +421,14 @@ const PRESETS = {
   },
   falcon9: {
     ptype: "rocket",
-    aimless: true,                    // no heading or angle stage: the pad and
-                                      // the azimuth are part of the mission
+    noAngle: true,                    // pad and azimuth are the user's (since
+                                      // 2026-08-17; it used to teleport to
+                                      // LC-39A); the pitch program flies the
+                                      // ascent, so there is no angle stage
     speed: 0, angle: 90, relH: 0,     // unused: thrust and the pitch program fly it
     dt: 0.05,
     drag: true,
     timeSpeed: 1,
-    site: { lat: 28.6084, lon: -80.6043, name: "LC-39A, Kennedy Space Center" },
-    azimuth: 45,                      // deg, north-east, the ISS-inclination track
     area: 21.2,                       // m^2, the 5.2 m core cross section
     payload: 13000,                   // kg, a Starlink-class LEO stack
     fairing: 1750,                    // kg, both halves
@@ -1233,6 +1235,10 @@ function flyHintHtml() {
       return "Step 2 of 2 &middot; <b>heading " + Math.round(launch.heading) + "&deg;</b>: "
         + "look along the ground track, <b>left click</b> deploys it in orbit "
         + "400 km overhead. <b>Right click</b> goes back to the ground point.";
+    if (pr.noAngle)
+      return "Step 2 of 2 &middot; <b>azimuth " + Math.round(launch.heading) + "&deg;</b>: "
+        + "look along the launch track, <b>left click</b> ignites. "
+        + "<b>Right click</b> goes back to the pad.";
     return "Step 2 of 3 &middot; <b>heading " + Math.round(launch.heading) + "&deg;</b>: "
       + "look where it should fly, <b>left click</b> locks the arrow. "
       + "<b>Right click</b> goes back to the launch point.";
@@ -1262,9 +1268,60 @@ function flyHintHtml() {
   if (pr.orbital)
     return "Step 1 of 2 &middot; <b>left click</b> sets the ground point at the crosshair, "
       + "then you set the heading; it deploys in orbit 400 km up." + esc;
+  if (pr.noAngle)
+    return "Step 1 of 2 &middot; <b>left click</b> sets the pad at the crosshair, "
+      + "then you aim the launch azimuth; guidance flies the ascent." + esc;
   return "Step 1 of 3 &middot; <b>left click</b> sets the launch point at the crosshair, "
     + "then you set the heading, then the angle." + esc;
 }
+// Live flight narration: a second bottom panel above the controls hint,
+// sibling of the landing dialogue, with a T+ clock and what the object is
+// doing right now. Driven entirely off the physics state, so it never
+// disagrees with the flight.
+function phaseHtml(s) {
+  const T = "T+" + fmtClock(s.t) + " &middot; ";
+  if (s.phase === "rocket") {
+    if (s.done && s.orbit)
+      return T + `<b>In orbit</b> &middot; ${Math.round(s.orbit.perigee/1000)} &times; `
+        + `${Math.round(s.orbit.apogee/1000)} km, ${fmtSpeed(s.orbit.vInertial)} inertial, `
+        + `${Math.round(s.orbit.propLeft)} kg deorbit reserve`;
+    if (s.done)
+      return T + "<b>SECO</b> &middot; propellant exhausted, coasting on the resulting orbit";
+    if (s.stage === 1 && s.burning) {
+      const frac = Math.round(100 * s.prop / s.p.r1.prop);
+      const q = s.maxQ && s.t > s.maxQ.t + 5 ? "through max-Q, " : "";
+      return T + `<b>Stage 1 burn</b> &middot; ${q}${frac}% booster propellant left`;
+    }
+    if (s.stage === 1)
+      return T + "<b>MECO</b> &middot; staging: the booster (and its landing reserve) separates";
+    const vIn = V3.norm(V3.add(s.v, V3.cross([0, 0, OMEGA], s.r)));
+    const vc = Math.sqrt(GM / V3.norm(s.r));
+    return T + `<b>Stage 2 burn</b>${s.fairingGone ? "" : " &middot; fairing still on"}`
+      + ` &middot; ${fmtSpeed(vIn)} inertial of ${fmtSpeed(vc)} orbital`;
+  }
+  if (s.phase === "balloon")
+    return T + "<b>Rising under buoyancy</b> &middot; expanding as the pressure falls";
+  if (s.phase === "scrap")
+    return T + `<b>Scrap falling</b> &middot; burst at ${fmtAlt(s.burstInfo?.alt ?? 0)}`;
+  if (s.phase === "sound")
+    return T + `<b>Wavefront expanding</b> &middot; radius ${fmtDist(s.rad)}`;
+  if (s.p.orbital) {
+    const period = 2 * Math.PI * Math.sqrt(V3.norm(s.r) ** 3 / GM);
+    return T + `<b>In orbit</b> &middot; revolution ${1 + Math.floor(s.t / period)}, `
+      + `${fmtClock(period)} period`;
+  }
+  const vU = V3.dot(s.v, V3.unit(s.r));
+  return T + `<b>Ballistic</b> &middot; ${vU > 0 ? "climbing" : "descending"}, `
+    + `${fmtAlt(simAlt(s))} MSL`;
+}
+function updatePhasePanel() {
+  const el = $("phasePanel");
+  if (sim && simStatus === "flying" && !sim.preview) {
+    el.innerHTML = phaseHtml(sim);
+    el.style.display = "block";
+  } else el.style.display = "none";
+}
+
 function updateFlyHint() {
   const h = flyHintHtml();
   if (h !== lastFlyHint) { lastFlyHint = h; $("flyHint").innerHTML = h; }
@@ -1327,11 +1384,11 @@ function ladderAdvance() {           // left click under pointer lock
     const pt = centerGroundPoint();
     if (pt) placeLaunch(pt.lat, pt.lng);
   } else if (launchStage === "heading") {
-    // an orbital preset has no angle stage: horizontal is the only angle.
+    // a noAngle preset (orbit deploy, rocket ascent) has no angle stage.
     // Leave the heading stage BEFORE the (async) doFire, or the live aim
     // updater keeps rewriting launch.heading from the crosshair while
     // doFire awaits the elevation and wind fetches
-    if (PRESETS[$("preset").value]?.orbital) { launchStage = "angle"; doFire(); }
+    if (PRESETS[$("preset").value]?.noAngle) { launchStage = "angle"; doFire(); }
     else enterAngleStage();
   } else if (launchStage === "angle") {
     doFire();
@@ -1596,7 +1653,7 @@ function readParams() {
     for (const k of ["r1","r2","payload","fairing","fairingT","sepDelay","area",
                      "qStart","qEnd","qThrottle","gLimit","vertUntil","kickUntil",
                      "kickDeg","targetAlt","guideTau","site","azimuth","audibleKm",
-                     "orbital"])
+                     "orbital","noAngle"])
       if (k in pr) p[k] = pr[k];
   }
   return p;
@@ -2006,6 +2063,7 @@ function tick(ts) {
     } else { tag.style.display = "none"; dotEl.style.display = "none"; }
     if (sim && simStatus === "flying") { placeObjectGraphics(sim); drawTrackLive(); }
     updateFlyHint();
+    updatePhasePanel();
     globe.render();
   }
   if (!sim || !playing || simStatus !== "flying") return;
@@ -2269,15 +2327,16 @@ function applyPreset(name) {
   $("ballParams").style.display = pr.ptype === "ball" ? "" : "none";
   // an aimless preset ignores heading and launch angle, so say so in the panel
   const aimless = !!pr.aimless;
-  $("angle").disabled = aimless || !!pr.orbital;
+  $("angle").disabled = aimless || !!pr.noAngle;
   $("angle").title = aimless ? "not used: the balloon is released, not aimed"
-                   : pr.orbital ? "not used: an orbit is horizontal by definition" : "";
+                   : pr.orbital ? "not used: an orbit is horizontal by definition"
+                   : pr.noAngle ? "not used: the pitch program flies the ascent" : "";
   for (const id of ["headingRow", "angleRow"]) {
     const row = $(id);
     if (row) row.style.opacity =
-      (aimless || (pr.orbital && id === "angleRow")) ? "0.45" : "";
+      (aimless || (pr.noAngle && id === "angleRow")) ? "0.45" : "";
   }
-  $("aimNote").style.display = (aimless || pr.orbital) ? "" : "none";
+  $("aimNote").style.display = (aimless || pr.noAngle) ? "" : "none";
   if (pr.site) {                       // fly the camera to the launch site
     $("aimNote").textContent = "Launches from " + pr.site.name
       + " on a " + pr.azimuth + " deg azimuth. Click anywhere to start the count.";
@@ -2290,6 +2349,9 @@ function applyPreset(name) {
   } else if (pr.orbital) {
     $("aimNote").textContent = "Click a ground point and aim a heading: it deploys "
       + "400 km overhead at circular orbital speed. No launch angle.";
+  } else if (pr.noAngle) {
+    $("aimNote").textContent = "Click the pad location and aim the launch azimuth: "
+      + "guidance flies the ascent to orbit. No launch angle.";
   }
   const dm = $("dragModelOut");
   if (dm) dm.textContent = pr.dragModel && pr.dragModel !== "fixed"
