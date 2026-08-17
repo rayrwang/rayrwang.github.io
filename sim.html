@@ -82,6 +82,19 @@
   #objDot { position:absolute; z-index:14; display:none; width:15px; height:15px;
       margin:-7.5px 0 0 -7.5px; border-radius:50%; background:#3b82f6;
       border:2.5px solid #fff; box-shadow:0 0 8px rgba(0,0,0,.65); pointer-events:none; }
+  /* city search, top centre */
+  #citySearch { position:absolute; top:10px; left:50%; transform:translateX(-50%);
+      z-index:20; width:270px; font:13px system-ui, sans-serif; }
+  #cityInput { width:100%; box-sizing:border-box; padding:6px 10px; border-radius:8px;
+      border:1px solid rgba(255,255,255,.25); background:rgba(16,18,22,.82); color:#eee;
+      outline:none; }
+  #cityInput::placeholder { color:#9aa0a8; }
+  #cityResults { margin-top:4px; border-radius:8px; overflow:hidden; }
+  #cityResults div { padding:6px 10px; background:rgba(16,18,22,.88); color:#ddd;
+      cursor:pointer; border-top:1px solid rgba(255,255,255,.06);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #cityResults div:hover { background:rgba(59,130,246,.35); }
+  #cityResults .note { cursor:default; color:#9aa0a8; }
 </style>
 </head>
 <body>
@@ -90,6 +103,10 @@
   &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>
   contributors &middot; terrain Mapzen/AWS &middot; buildings OpenFreeMap</div>
 <div id="crosshair"></div>
+<div id="citySearch">
+  <input id="cityInput" type="text" placeholder="Go to city..." autocomplete="off" spellcheck="false">
+  <div id="cityResults"></div>
+</div>
 <div id="objTag"></div>
 <div id="objDot"></div>
 
@@ -1171,7 +1188,7 @@ function setHint(t) { $("stateHint").textContent = t; }
 let menusHidden = false;
 function toggleMenus() {
   menusHidden = !menusHidden;
-  for (const id of ["ctl", "hud", "bottomStack"])
+  for (const id of ["ctl", "hud", "bottomStack", "citySearch"])
     $(id).style.display = menusHidden ? "none" : "";
 }
 
@@ -2279,6 +2296,77 @@ fetchElevBatch([[SPAWN.lat, SPAWN.lon]]);   // warm the cache for the spawn area
 loadWind(SPAWN.lat, SPAWN.lon);             // current wind by default
 requestAnimationFrame(tick);
 
+/* ---------- city search ---------- */
+// Nominatim, browser-direct like every other data service here: debounced,
+// one in-flight request, five results. Selecting one teleports the camera to
+// 700 m above the local terrain; the sim and any flight are untouched (this
+// is a camera move, the same as flying there). Terrain for the destination
+// loads after arrival, so the altitude re-seats once the tile lands, unless
+// the user has already flown more than 2 km away.
+let cityAbort = null, cityTimer = null;
+function cityGo(lat, lon, label) {
+  cam.lat = lat; cam.lon = lon;
+  cam.alt = (globe.terrainAt(lat, lon) ?? 0) + 700;
+  cam.pitch = -30;
+  camVel[0] = camVel[1] = camVel[2] = 0;
+  let tries = 0;
+  const seat = setInterval(() => {
+    if (++tries > 10 || surfDist(cam.lat, cam.lon, lat, lon) > 2000)
+      return clearInterval(seat);
+    const g = globe.terrainAt(lat, lon);
+    if (g != null) { cam.alt = Math.max(cam.alt, g + 700); clearInterval(seat); }
+  }, 300);
+  $("cityResults").innerHTML = "";
+  if (label) $("cityInput").value = label;
+  $("cityInput").blur();
+}
+function cityNote(t) { $("cityResults").innerHTML = `<div class="note">${t}</div>`; }
+async function citySearch(q) {
+  if (cityAbort) cityAbort.abort();
+  cityAbort = new AbortController();
+  let res;
+  try {
+    const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=1&q="
+      + encodeURIComponent(q), { signal: cityAbort.signal });
+    res = await r.json();
+  } catch (e) { if (e.name !== "AbortError") cityNote("search unreachable"); return; }
+  const box = $("cityResults");
+  box.innerHTML = "";
+  if (!res.length) return cityNote("no matches");
+  for (const p of res) {
+    const d = document.createElement("div");
+    // short label: name, state, country; Nominatim's display_name inserts
+    // every intermediate region ("Hamilton, Golden Horseshoe, Ontario,
+    // Canada"), so build from the structured address instead and keep the
+    // full hierarchy as hover text
+    const a = p.address || {};
+    const name = p.name || p.display_name.split(",")[0];
+    const label = [name, a.state || a.province || a.county, a.country]
+      .filter(x => x && x !== name).reduce((s, x) => s + ", " + x, name);
+    d.textContent = label;
+    d.title = p.display_name;
+    d.onclick = () => cityGo(+p.lat, +p.lon, name);
+    box.appendChild(d);
+  }
+}
+$("cityInput").addEventListener("input", () => {
+  clearTimeout(cityTimer);
+  const q = $("cityInput").value.trim();
+  if (q.length < 2) { $("cityResults").innerHTML = ""; return; }
+  cityTimer = setTimeout(() => citySearch(q), 400);
+});
+$("cityInput").addEventListener("keydown", e => {
+  // let F1 and everything else bubble (the document handler's input-focus
+  // guard already ignores them); swallow only the keys the box handles
+  if (e.code === "Enter" || e.code === "Escape") e.stopPropagation();
+  if (e.code === "Enter") {
+    const f = $("cityResults").firstElementChild;
+    if (f && !f.classList.contains("note")) f.onclick();
+    else citySearch($("cityInput").value.trim());
+  }
+  if (e.code === "Escape") { $("cityResults").innerHTML = ""; $("cityInput").blur(); }
+});
+
 // introspection hooks for automated verification (pointer lock needs a real
 // user gesture, so tests drive the camera and the launch ladder directly)
 window.__sim = {
@@ -2287,7 +2375,7 @@ window.__sim = {
   get windProfile() { return windProfile; }, get mapReady() { return mapReady; },
   get cam() { return cam; }, get line3dOk() { return line3d.ok; },
   globe, terrainAt, isa, windAt, simAlt: () => sim ? simAlt(sim) : null,
-  fmtDist, fmtAlt, fmtSpeed, applyPreset,
+  fmtDist, fmtAlt, fmtSpeed, applyPreset, cityGo, citySearch,
   setCam: (la, lo, alt, yaw, pitch) => {
     cam.lat = la; cam.lon = lo; cam.alt = alt; cam.yaw = yaw; cam.pitch = pitch;
   },
