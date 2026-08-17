@@ -1881,8 +1881,8 @@ function land(s, ll, ground) {
   const ft = s.t < 60 ? s.t.toFixed(2) + " s" : fmtClock(s.t);
   $("landStats").innerHTML =
     `flight time ${ft} &middot; straight-line ${fmtDist(straight)} &middot; ` +
-    `track ${fmtDist(s.trackLen)} &middot; impact ${impact.toFixed(1)} m/s` +
-    (s.burstInfo ? `<br>burst at ${Math.round(s.burstInfo.alt)} m MSL after ${fmtClock(s.burstInfo.t)} (${s.burstInfo.reason})` : "");
+    `track ${fmtDist(s.trackLen)} &middot; impact ${fmtSpeed(impact)}` +
+    (s.burstInfo ? `<br>burst at ${fmtAlt(s.burstInfo.alt)} MSL after ${fmtClock(s.burstInfo.t)} (${s.burstInfo.reason})` : "");
   $("landPanel").style.display = "block";
   setHint("Landed. Left click starts a new launch.");
   window.__landing = { t: s.t, straight, trackLen: s.trackLen, impact,
@@ -1971,8 +1971,8 @@ function tick(ts) {
   if (s.phase === "sound" && s.rad >= (s.p.audibleKm ?? 4653)*1000) {
     const c = SOUND(atmAt(simAlt(s)).T);
     return declareFloating(s,
-      `Ring reached ${Math.round(s.rad/1000)} km after ${fmtClock(s.t)}, ` +
-      `travelling at ${c.toFixed(0)} m/s. Krakatoa was heard at this distance ` +
+      `Ring reached ${fmtDist(s.rad)} after ${fmtClock(s.t)}, ` +
+      `travelling at ${fmtSpeed(c)}. Krakatoa was heard at this distance ` +
       `about four hours after the eruption. Beyond here it is still moving, ` +
       `just no longer loud enough to hear.`);
   }
@@ -1982,13 +1982,13 @@ function tick(ts) {
   if (s.phase === "balloon" && simAlt(s) - groundNow > 200 && Math.abs(vU) < 0.03) {
     if (s.calmSince == null) s.calmSince = s.t;
     if (s.t - s.calmSince > 600)
-      return declareFloating(s, `Buoyancy balanced at ${Math.round(simAlt(s))} m MSL; ` +
+      return declareFloating(s, `Buoyancy balanced at ${fmtAlt(simAlt(s))} MSL; ` +
         `vertical speed ~0 for 10 min of sim time. It never reaches a burst condition.`);
   } else s.calmSince = null;
   if (s.t > 6*3600)
     return declareFloating(s, s.orbit
       ? `In orbit: ${Math.round(s.orbit.perigee/1000)} x ${Math.round(s.orbit.apogee/1000)} km, ` +
-        `${s.orbit.vInertial.toFixed(0)} m/s inertial, ${Math.round(s.orbit.propLeft)} kg deorbit reserve. ` +
+        `${fmtSpeed(s.orbit.vInertial)} inertial, ${Math.round(s.orbit.propLeft)} kg deorbit reserve. ` +
         `It is not coming down on its own.`
       : "Still airborne after 6 h of simulated time; giving up on a landing.");
   updateHud(s, ll, groundNow, false);
@@ -2032,7 +2032,25 @@ function fmtClock(t) {
   if (h > 0) return `${h}:${String(m).padStart(2,"0")}:${String(sec).padStart(2,"0")}`;
   return `${m}:${String(sec).padStart(2,"0")}`;
 }
-function fmtDist(d) { return d >= 10000 ? (d/1000).toFixed(1) + " km" : Math.round(d) + " m"; }
+// Unit display: metres near the ground, kilometres once they stop being
+// readable, three significant figures either way. Altitude holds metres up
+// to 10 km (a climb reads better with the extra digit); horizontal distance
+// switches at 1 km; speed switches to km/s at 1 km/s.
+function fmtDist(d) {
+  const k = Math.abs(d)/1000;
+  if (k < 1)   return Math.round(d) + " m";
+  if (k < 10)  return (d/1000).toFixed(2) + " km";
+  if (k < 100) return (d/1000).toFixed(1) + " km";
+  return Math.round(d/1000).toLocaleString("en-US") + " km";
+}
+function fmtAlt(h) { return Math.abs(h) < 10000 ? Math.round(h) + " m" : fmtDist(h); }
+function fmtSpeed(v) {
+  const a = Math.abs(v);
+  if (a < 1000)   return v.toFixed(1) + " m/s";
+  if (a < 10000)  return (v/1000).toFixed(2) + " km/s";
+  if (a < 100000) return (v/1000).toFixed(1) + " km/s";
+  return Math.round(v/1000).toLocaleString("en-US") + " km/s";
+}
 
 // velocity arrow: direction = ground-track bearing, length = GROUND speed
 // (horizontal component) times a per-preset pixel scale, so a 47 m/s pitch
@@ -2134,14 +2152,14 @@ function updateHud(s, ll, ground, force) {   // text only; positions above
   const total = Math.hypot(hs, vU);
   const pitch = Math.atan2(vU, hs) * 180/Math.PI;
   const brg = (Math.atan2(vE, vN)*180/Math.PI + 360) % 360;
-  $("objTag").textContent = `${Math.round(h)} m MSL · ${total.toFixed(1)} m/s`;
+  $("objTag").textContent = `${fmtAlt(h)} MSL · ${fmtSpeed(total)}`;
   if (hs > 0.05) $("headingOut").textContent = brg.toFixed(0) + "°";
   $("hudPitch").textContent = (pitch >= 0 ? "+" : "") + pitch.toFixed(1) + "°";
-  $("hudAgl").textContent = Math.round(h - ground) + " m";
-  $("hudMsl").textContent = Math.round(h) + " m";
-  $("hudAir").textContent = air.toFixed(1) + " m/s";
-  $("hudGnd").textContent = hs.toFixed(1) + " m/s";
-  $("hudVs").textContent = (vU >= 0 ? "+" : "") + vU.toFixed(1) + " m/s";
+  $("hudAgl").textContent = fmtAlt(h - ground);
+  $("hudMsl").textContent = fmtAlt(h);
+  $("hudAir").textContent = fmtSpeed(air);
+  $("hudGnd").textContent = fmtSpeed(hs);
+  $("hudVs").textContent = (vU >= 0 ? "+" : "") + fmtSpeed(vU);
   $("hudDist").textContent = fmtDist(surfDist(s.lat0, s.lon0, ll[0], ll[1]));
   // Mach and the live drag coefficient: on a G1/G7 preset you can watch Cd
   // climb through the transonic peak and fall away again as it slows
@@ -2252,6 +2270,7 @@ window.__sim = {
   get windProfile() { return windProfile; }, get mapReady() { return mapReady; },
   get cam() { return cam; }, get line3dOk() { return line3d.ok; },
   globe, terrainAt, isa, windAt, simAlt: () => sim ? simAlt(sim) : null,
+  fmtDist, fmtAlt, fmtSpeed, applyPreset,
   setCam: (la, lo, alt, yaw, pitch) => {
     cam.lat = la; cam.lon = lo; cam.alt = alt; cam.yaw = yaw; cam.pitch = pitch;
   },
