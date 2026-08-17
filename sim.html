@@ -2333,6 +2333,7 @@ async function citySearch(q) {
   const box = $("cityResults");
   box.innerHTML = "";
   if (!res.length) return cityNote("no matches");
+  const shown = new Set();   // city + its admin boundary arrive as twins
   for (const p of res) {
     const d = document.createElement("div");
     // short label: name, state, country; Nominatim's display_name inserts
@@ -2343,6 +2344,8 @@ async function citySearch(q) {
     const name = p.name || p.display_name.split(",")[0];
     const label = [name, a.state || a.province || a.county, a.country]
       .filter(x => x && x !== name).reduce((s, x) => s + ", " + x, name);
+    if (shown.has(label)) continue;
+    shown.add(label);
     d.textContent = label;
     d.title = p.display_name;
     d.onclick = () => cityGo(+p.lat, +p.lon, name);
