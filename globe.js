@@ -200,6 +200,51 @@ void main() {
   frag = vec4(col, 1.0);
 }`;
 
+// Real stars: the Yale Bright Star Catalog (stars.bin, 9,096 stars, all of
+// naked-eye astronomy) as point sprites. Directions are J2000 equatorial
+// unit vectors rotated into ECEF by Greenwich sidereal time each frame
+// (precession since 2000 is ~0.4 deg, under the naked-eye pattern
+// threshold, ignored). Visibility reuses the sky shader's closest-approach
+// altitude, so stars fade in exactly where its air thins to black and cut
+// off below the horizon; terrain overdraws them afterwards.
+const STAR_VS = `#version 300 es
+precision highp float;
+in vec3 aDir; in float aMag; in float aBv;
+uniform mat4 uVP; uniform float uGmst; uniform float uDist;
+uniform vec3 uEarthC; uniform float uR; uniform float uPxScale;
+out float vA; out vec3 vCol;
+void main() {
+  float c = cos(uGmst), s = sin(uGmst);
+  vec3 d = vec3(c*aDir.x + s*aDir.y, -s*aDir.x + c*aDir.y, aDir.z);
+  gl_Position = uVP * vec4(d * uDist, 1.0);
+  float tca = dot(d, uEarthC);
+  float c2 = dot(uEarthC, uEarthC) - tca * tca;
+  float camAlt = length(uEarthC) - uR;
+  float hmin = tca > 0.0 ? sqrt(max(c2, 0.0)) - uR : camAlt;
+  bool hit = tca > 0.0 && c2 < uR * uR;
+  float h = max(hmin, 0.0);
+  float sky = min(1.0, exp(-h / 8500.0) + 0.72 * exp(-h / 1100.0));
+  float vis = hit ? 0.0 : 1.0 - sky;
+  // zero point 3.0: brighter than strict photometry by ~1.5 mag, the usual
+  // planetarium compensation for a screen's inability to render scotopic
+  // vision; a mag-5 star is one dim pixel, Sirius saturates
+  float flux = pow(10.0, -0.4 * (aMag - 3.0));
+  vA = min(1.0, flux) * vis;
+  gl_PointSize = uPxScale * clamp(3.0 - 0.30 * aMag, 1.5, 6.0);
+  float t = clamp((aBv + 0.4) / 2.0, 0.0, 1.0);
+  vCol = mix(vec3(0.67, 0.76, 1.0), vec3(1.0, 0.80, 0.56), t);
+}`;
+
+const STAR_FS = `#version 300 es
+precision highp float;
+in float vA; in vec3 vCol; out vec4 frag;
+void main() {
+  vec2 q = gl_PointCoord * 2.0 - 1.0;
+  float r2 = dot(q, q);
+  if (r2 > 1.0) discard;
+  frag = vec4(vCol * vA * exp(-2.8 * r2), 1.0);
+}`;
+
 // screen-space expanded polylines (same scheme the MapLibre custom layer
 // used): each segment is a quad, pushed sideways in pixels in the vertex
 // shader; vertices behind the camera collapse the primitive
@@ -327,8 +372,41 @@ class Globe {
     };
     this.pTile = mk(TILE_VS, TILE_FS);
     this.pSky = mk(SKY_VS, SKY_FS);
+    this.pStar = mk(STAR_VS, STAR_FS);
     this.pLine = mk(LINE_VS, LINE_FS);
     this.pBldg = mk(BLDG_VS, BLDG_FS);
+  }
+
+  async _loadStars() {
+    try {
+      const buf = await (await fetch("stars.bin")).arrayBuffer();
+      const n = new Uint32Array(buf, 0, 1)[0];
+      const f = new Float32Array(buf, 4);
+      const out = new Float32Array(n * 5);
+      for (let i = 0; i < n; i++) {
+        const ra = f[i * 4] * D2R, dec = f[i * 4 + 1] * D2R;
+        out[i * 5]     = Math.cos(dec) * Math.cos(ra);
+        out[i * 5 + 1] = Math.cos(dec) * Math.sin(ra);
+        out[i * 5 + 2] = Math.sin(dec);
+        out[i * 5 + 3] = f[i * 4 + 2];
+        out[i * 5 + 4] = f[i * 4 + 3];
+      }
+      const gl = this.gl;
+      this.starBuf = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.starBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW);
+      const p = this.pStar.p;
+      this.starLoc = { dir: gl.getAttribLocation(p, "aDir"),
+                       mag: gl.getAttribLocation(p, "aMag"),
+                       bv:  gl.getAttribLocation(p, "aBv") };
+      this.starCount = n;
+    } catch (e) { this.starCount = 0; }   // no stars is a graceful state
+  }
+  // Greenwich mean sidereal time, radians, from a unix-ms clock
+  gmstRad(ms) {
+    const d = ms / 86400000 - 10957.5;          // days since J2000.0
+    const deg = (280.46061837 + 360.98564736629 * d) % 360;
+    return (deg < 0 ? deg + 360 : deg) * D2R;
   }
 
   _initStatic() {
@@ -337,6 +415,8 @@ class Globe {
     this.skyBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    this.starCount = 0;
+    this._loadStars();
     // 1x1 fallback texture (paper tone) so a tile can always draw; the
     // magenta twin exists for tests only (OSM's own land colors sit within
     // classifier range of the paper tone, so "paper %" over-counted)
@@ -970,6 +1050,33 @@ class Globe {
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    // stars: additive over the sky, before terrain (which overdraws them)
+    if (this.starCount) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE);
+      gl.useProgram(this.pStar.p);
+      const su = this.pStar.u;
+      gl.uniformMatrix4fv(su.uVP, false, this.vp);
+      gl.uniform1f(su.uGmst, this.gmstRad(Date.now()));
+      gl.uniform1f(su.uDist, 3e7);
+      gl.uniform3fv(su.uEarthC, C);
+      gl.uniform1f(su.uR, GLOBE_R);
+      gl.uniform1f(su.uPxScale, window.devicePixelRatio || 1);
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.starBuf);
+      const L = this.starLoc;
+      gl.enableVertexAttribArray(L.dir);
+      gl.vertexAttribPointer(L.dir, 3, gl.FLOAT, false, 20, 0);
+      gl.enableVertexAttribArray(L.mag);
+      gl.vertexAttribPointer(L.mag, 1, gl.FLOAT, false, 20, 12);
+      gl.enableVertexAttribArray(L.bv);
+      gl.vertexAttribPointer(L.bv, 1, gl.FLOAT, false, 20, 16);
+      gl.drawArrays(gl.POINTS, 0, this.starCount);
+      gl.disableVertexAttribArray(L.dir);
+      gl.disableVertexAttribArray(L.mag);
+      gl.disableVertexAttribArray(L.bv);
+      gl.disable(gl.BLEND);
+    }
 
     // terrain
     gl.enable(gl.DEPTH_TEST);
