@@ -868,6 +868,13 @@ const WALK = 11, SPRINT = 26, ACCEL = 90, CAMDRAG = 0.0016;   // nettlecombe con
 // 5 km -> 5.8 km/s, 10 -> 16, 20 -> 49, 30 -> 104, 50 -> 291, 100 -> 1349,
 // cap 5000 km/s reached ~180 km.
 const SPD_KNEE = 2000, SPD_CURV = 0.17, SPD_MAX = 5e6;
+// Altitude at which the curve stops steepening. Below this the ramp is the
+// log-quadratic RW tuned by feel; above it the exponent freezes, so speed
+// keeps growing with height but only linearly. Without it the curvature
+// compounds forever and the top of the atmosphere is unusable: 1,350 km/s
+// at 100 km and the 5,000 km/s ceiling by 180, which circles the planet in
+// eight seconds. Everything below 80 km is untouched by this.
+const SPD_SAT = 80000;
 // Floor for both fly ramps. The ramp is proportional to height above
 // ground, so at the terrain clamp (2 m) it fell to a crawl: the last few
 // metres of a descent took as long as the kilometres above them. 25 m/s
@@ -966,7 +973,7 @@ function moveCamera(dt) {
   // altitude: log v = log AGL + c(log(AGL/knee))^2, a parabola in log-log space.
   // Below the knee it is exactly linear, and the curve steepens smoothly from
   // there with no kink, which a piecewise ramp would give.
-  const u = Math.max(0, Math.log(agl/SPD_KNEE));
+  const u = Math.min(Math.max(0, Math.log(agl/SPD_KNEE)), Math.log(SPD_SAT/SPD_KNEE));
   const scale = Math.min(Math.max(agl*Math.exp(SPD_CURV*u*u), SPD_MIN), SPD_MAX) / WALK * speedMult;
   // VERTICAL gets its own, gentler ramp: plain linear, the original "one second
   // to the ground" rule. Near the ground it therefore matches horizontal
