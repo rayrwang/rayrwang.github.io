@@ -406,7 +406,9 @@ const PRESETS = {
     speed: 7670,       // m/s display; overridden by the exact circular value
     angle: 0,
     relH: 400000,      // m above the clicked ground point
-    dt: 0.5,           // s; RK4 on a smooth Kepler orbit, ~11k steps/rev
+    dt: 0.02,          // s; must be under a frame time or the dot jumps
+                       // (the sound-preset stutter law); ~277k cheap RK4
+                       // steps per revolution, ~830 steps/frame at 1000x
     drag: true,
     timeSpeed: 1,      // real time like every preset; arrows to 60x show a
                        // 92.4-min revolution in ~92 s
