@@ -206,6 +206,7 @@
   <div class="hudrow"><span>From launch</span><span id="hudDist">&ndash;</span></div>
   <div class="hudrow"><span>Mach &middot; Cd</span><span id="hudMach">&ndash;</span></div>
   <label style="margin-top:5px"><span>Follow object (F to toggle)</span><input id="followToggle" type="checkbox"></label>
+  <div class="hint" id="camPos" style="margin:4px 0 0"></div>
 </div>
 
 <div id="bottomStack">
@@ -2063,6 +2064,12 @@ function tick(ts) {
     if (sim && simStatus === "flying") { placeObjectGraphics(sim); drawTrackLive(); }
     updateFlyHint();
     updatePhasePanel();
+    { // camera readout: 4 decimals ~ 11 m, enough to relocate a view
+      const t = cam.lat.toFixed(4) + ", " + cam.lon.toFixed(4)
+        + " · " + fmtAlt(cam.alt) + " MSL";
+      const el = $("camPos");
+      if (el.textContent !== t) el.textContent = t;
+    }
     globe.render();
   }
   if (!sim || !playing || simStatus !== "flying") return;
