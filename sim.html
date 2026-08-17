@@ -126,6 +126,7 @@
       <option value="sound">Sound of a Krakatoa-sized bang</option>
       <option value="manhole">Manhole cover, Pascal-B (1957)</option>
       <option value="falcon9">Falcon 9, ascent to orbit</option>
+      <option value="iss">ISS, released in orbit</option>
     </select><span id="badge"></span></span>
   </label>
 
@@ -390,6 +391,29 @@ const PRESETS = {
   // Masses and engine numbers are the published Block 5 figures; the ONE fitted
   // number is the pitch-kick angle, calibrated so the model reproduces the
   // published MECO and SECO conditions.
+  // The International Space Station, released on orbit: click a ground
+  // point, pick a heading, and it appears 400 km overhead (NASA's "about
+  // 250 miles") at circular orbital speed along that heading. No angle
+  // stage: an orbit is horizontal by definition. The speed box shows the
+  // round inertial figure; the physics recomputes sqrt(GM/r) exactly for
+  // the actual radius at deployment. Honesty note: above 32 km this
+  // model's atmosphere is a 7 km scale height, so at 400 km the density
+  // is ~1e-23 kg/m^3 and the real station's ~2 km/month drag decay does
+  // not occur; the orbit here is Keplerian for all purposes.
+  iss: {
+    ptype: "ball",
+    orbital: true,     // deploy horizontal at sqrt(GM/r) inertial; skip angle
+    speed: 7670,       // m/s display; overridden by the exact circular value
+    angle: 0,
+    relH: 400000,      // m above the clicked ground point
+    dt: 0.5,           // s; RK4 on a smooth Kepler orbit, ~11k steps/rev
+    drag: true,
+    timeSpeed: 60,     // one 92.4-min revolution in ~92 s of wall clock
+    mMass: 4.2e8,      // g: 420 t assembled mass
+    mDiam: 40700,      // mm: disc equivalent of ~1,300 m^2 mean cross-section
+    mCd: 2.2,          // free-molecular value (academic in this vacuum)
+    mRpm: 0, mCl: 0,
+  },
   falcon9: {
     ptype: "rocket",
     aimless: true,                    // no heading or angle stage: the pad and
@@ -1201,10 +1225,15 @@ function flyHintHtml() {
       + "(<b>A/D</b> strafe, <b>Space</b> climbs, <b>Shift</b> descends, <b>Alt</b> or "
       + "double-tap-W sprints, scroll trims speed). <b>T</b> pauses, <b>arrow left/right</b> "
       + "sets time speed. <b>Esc</b> returns here.";
-  if (launchStage === "heading")
+  if (launchStage === "heading") {
+    if (pr.orbital)
+      return "Step 2 of 2 &middot; <b>heading " + Math.round(launch.heading) + "&deg;</b>: "
+        + "look along the ground track, <b>left click</b> deploys it in orbit "
+        + "400 km overhead. <b>Right click</b> goes back to the ground point.";
     return "Step 2 of 3 &middot; <b>heading " + Math.round(launch.heading) + "&deg;</b>: "
       + "look where it should fly, <b>left click</b> locks the arrow. "
       + "<b>Right click</b> goes back to the launch point.";
+  }
   if (launchStage === "angle")
     return "Step 3 of 3 &middot; <b>launch angle " + (+$("angle").value || 0).toFixed(1)
       + "&deg;</b>: <b>scroll</b> or <b>arrow up/down</b> to change it (shift for fine), "
@@ -1227,6 +1256,9 @@ function flyHintHtml() {
   if (oneClick)
     return "<b>Left click</b> releases it at the crosshair &middot; no heading or angle to "
       + "set, it goes where the air takes it." + esc;
+  if (pr.orbital)
+    return "Step 1 of 2 &middot; <b>left click</b> sets the ground point at the crosshair, "
+      + "then you set the heading; it deploys in orbit 400 km up." + esc;
   return "Step 1 of 3 &middot; <b>left click</b> sets the launch point at the crosshair, "
     + "then you set the heading, then the angle." + esc;
 }
@@ -1292,7 +1324,12 @@ function ladderAdvance() {           // left click under pointer lock
     const pt = centerGroundPoint();
     if (pt) placeLaunch(pt.lat, pt.lng);
   } else if (launchStage === "heading") {
-    enterAngleStage();
+    // an orbital preset has no angle stage: horizontal is the only angle.
+    // Leave the heading stage BEFORE the (async) doFire, or the live aim
+    // updater keeps rewriting launch.heading from the crosshair while
+    // doFire awaits the elevation and wind fetches
+    if (PRESETS[$("preset").value]?.orbital) { launchStage = "angle"; doFire(); }
+    else enterAngleStage();
   } else if (launchStage === "angle") {
     doFire();
   }
@@ -1555,7 +1592,8 @@ function readParams() {
     p.dragModel = pr.dragModel || "fixed"; p.bc = pr.bc || 0;
     for (const k of ["r1","r2","payload","fairing","fairingT","sepDelay","area",
                      "qStart","qEnd","qThrottle","gLimit","vertUntil","kickUntil",
-                     "kickDeg","targetAlt","guideTau","site","azimuth","audibleKm"])
+                     "kickDeg","targetAlt","guideTau","site","azimuth","audibleKm",
+                     "orbital"])
       if (k in pr) p[k] = pr[k];
   }
   return p;
@@ -1570,7 +1608,13 @@ function makeState(p, lat, lon, g0, headingDeg, angleDeg, preview) {
   const r0 = llToR(lat, lon, g0 + p.relH);
   const { east, north, up } = enuAt(r0);
   const hdir = V3.add(V3.scale(east, Math.sin(hd)), V3.scale(north, Math.cos(hd)));
-  const v0 = V3.add(V3.scale(hdir, p.speed*Math.cos(an)), V3.scale(up, p.speed*Math.sin(an)));
+  let v0 = V3.add(V3.scale(hdir, p.speed*Math.cos(an)), V3.scale(up, p.speed*Math.sin(an)));
+  if (p.orbital) {
+    // circular inertial velocity along the chosen heading; the state's v is
+    // in the rotating (ECEF) frame, so the frame's omega x r comes off
+    const vi = Math.sqrt(GM / V3.norm(r0));
+    v0 = V3.sub(V3.scale(hdir, vi), [-OMEGA*r0[1], OMEGA*r0[0], 0]);
+  }
   const s = {
     p, t: 0, lat0: lat, lon0: lon, ground0: g0, preview: !!preview,
     r: r0, v: v0,
@@ -2208,6 +2252,10 @@ function updateHud(s, ll, ground, force) {   // text only; positions above
 /* ---------- UI wiring ---------- */
 function applyPreset(name) {
   const pr = PRESETS[name];
+  // keep the select in sync: readParams and doFire key the preset-only
+  // fields (site, azimuth, orbital, ...) off the select's value, so a
+  // programmatic applyPreset without this flew the wrong physics
+  $("preset").value = name;
   for (const f of PRESET_FIELDS) {
     if (!(f in pr)) continue;
     const el = $(FIELD_IDS[f]);
@@ -2218,12 +2266,15 @@ function applyPreset(name) {
   $("ballParams").style.display = pr.ptype === "ball" ? "" : "none";
   // an aimless preset ignores heading and launch angle, so say so in the panel
   const aimless = !!pr.aimless;
-  $("angle").disabled = aimless;
-  $("angle").title = aimless ? "not used: the balloon is released, not aimed" : "";
+  $("angle").disabled = aimless || !!pr.orbital;
+  $("angle").title = aimless ? "not used: the balloon is released, not aimed"
+                   : pr.orbital ? "not used: an orbit is horizontal by definition" : "";
   for (const id of ["headingRow", "angleRow"]) {
-    const row = $(id); if (row) row.style.opacity = aimless ? "0.45" : "";
+    const row = $(id);
+    if (row) row.style.opacity =
+      (aimless || (pr.orbital && id === "angleRow")) ? "0.45" : "";
   }
-  $("aimNote").style.display = aimless ? "" : "none";
+  $("aimNote").style.display = (aimless || pr.orbital) ? "" : "none";
   if (pr.site) {                       // fly the camera to the launch site
     $("aimNote").textContent = "Launches from " + pr.site.name
       + " on a " + pr.azimuth + " deg azimuth. Click anywhere to start the count.";
@@ -2233,6 +2284,9 @@ function applyPreset(name) {
     camVel[0] = camVel[1] = camVel[2] = 0;
   } else if (aimless) {
     $("aimNote").textContent = "Released, not aimed: one click places it and lets go.";
+  } else if (pr.orbital) {
+    $("aimNote").textContent = "Click a ground point and aim a heading: it deploys "
+      + "400 km overhead at circular orbital speed. No launch angle.";
   }
   const dm = $("dragModelOut");
   if (dm) dm.textContent = pr.dragModel && pr.dragModel !== "fixed"
@@ -2387,6 +2441,7 @@ window.__sim = {
     $("headingOut").textContent = brg.toFixed(0) + "°"; enterAngleStage(); },
   launchNow: () => doFire(),
   fireAt: (la, lo) => { launch.heading = bearingDeg(launch.lat, launch.lon, la, lo);
+    launchStage = "angle";   // freeze the heading: see ladderAdvance
     return doFire(); },
 };
 </script>
