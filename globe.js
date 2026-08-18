@@ -305,6 +305,7 @@ uniform sampler2D uTex;
 uniform vec4 uSolid;          // a > 0: flat color (polar caps), no texture
 uniform vec3 uFogCol; uniform float uFogNear; uniform float uFogFar;
 uniform int uMode;            // 0 analytic fog, 1 physical aerial perspective
+uniform float uVac;           // 1 = airless: aerial perspective off
 uniform vec3 uSun; uniform vec3 uEarthC; uniform float uExp;
 uniform vec3 uUpW; uniform vec3 uAzX; uniform vec3 uAzY; uniform float uCamR;
 uniform sampler2D uSkyV;
@@ -348,11 +349,11 @@ void main() {
     vec4 sv = texture(uSkyV, svUv(uCamR, theta, phi));
     vec3 Tpart = exp(-tauChord(-uEarthC, vPos - uEarthC));
     float frac = clamp((1.0 - Tpart.g) / max(1e-4, 1.0 - sv.a), 0.0, 1.0);
-    vec3 inscatter = (vec3(1.0) - exp(-sv.rgb * uExp * 0.26)) * frac;
+    vec3 inscatter = (vec3(1.0) - exp(-sv.rgb * uExp * 0.26)) * frac * (1.0 - uVac);
     // cartographic compositing: soften physical dimming to match the
     // reduced-exposure brightening, or bright map albedo develops a dark
     // mid-oblique saddle (the map is display-space, not radiometric)
-    col = col * (1.0 - (1.0 - Tpart.g) * 0.20) + inscatter;
+    col = col * (1.0 - (1.0 - Tpart.g) * 0.20 * (1.0 - uVac)) + inscatter;
   } else {
     float f = smoothstep(uFogNear, uFogFar, vDist);
     col = mix(col, uFogCol, f * 0.92);
@@ -520,6 +521,7 @@ precision highp float;   // same fp16-overflow hazard as TILE_FS
 in vec3 vNrm; in float vDist; in vec3 vPos;
 uniform vec3 uSun; uniform vec3 uFogCol; uniform float uFogNear; uniform float uFogFar;
 uniform int uMode; uniform vec3 uEarthC; uniform float uExp;
+uniform float uVac;
 uniform vec3 uUpW; uniform vec3 uAzX; uniform vec3 uAzY; uniform float uCamR;
 uniform sampler2D uSkyV;
 out vec4 frag;
@@ -553,8 +555,8 @@ void main() {
     vec4 sv = texture(uSkyV, svUv(uCamR, theta, phi));
     vec3 Tpart = exp(-tauChord(-uEarthC, vPos - uEarthC));
     float frac = clamp((1.0 - Tpart.g) / max(1e-4, 1.0 - sv.a), 0.0, 1.0);
-    col = col * (1.0 - (1.0 - Tpart.g) * 0.20)
-        + (vec3(1.0) - exp(-sv.rgb * uExp * 0.26)) * frac;
+    col = col * (1.0 - (1.0 - Tpart.g) * 0.20 * (1.0 - uVac))
+        + (vec3(1.0) - exp(-sv.rgb * uExp * 0.26)) * frac * (1.0 - uVac);
   } else {
     float f = smoothstep(uFogNear, uFogFar, vDist);
     col = mix(col, uFogCol, f * 0.92);
@@ -704,6 +706,7 @@ uniform float uTanHalf; uniform float uAspect;
 uniform vec3 uUpW; uniform vec3 uAzX; uniform vec3 uAzY;
 uniform vec3 uSun; uniform float uCamR; uniform float uExp;
 uniform vec3 uMoon; uniform float uMoonAng; uniform vec3 uMoonZ;
+uniform float uVac;           // 1 = airless: no sky radiance, no extinction
 uniform sampler2D uSkyV; uniform sampler2D uT; uniform sampler2D uMoonTex;
 ${ATMO_GLSL}
 void main() {
@@ -712,7 +715,7 @@ void main() {
   float theta = acos(clamp(dot(dir, uUpW), -1.0, 1.0));
   float phi = atan(dot(dir, uAzY), dot(dir, uAzX));
   vec4 sv = texture(uSkyV, svUv(uCamR, theta, phi));
-  vec3 L = sv.rgb;
+  vec3 L = sv.rgb * (1.0 - uVac);
   float muV = dot(dir, uUpW);
   float hitG = distToGround(uCamR, muV) > 0.0 ? 0.0 : 1.0;
   // transmittance along the view. A camera above the atmosphere must NOT
@@ -729,6 +732,7 @@ void main() {
       Tv = texture(uT, ttUv(Rt - 1.0, muE)).rgb;
     }
   } else Tv = texture(uT, ttUv(uCamR, muV)).rgb;
+  Tv = mix(Tv, vec3(1.0), uVac);                 // no air, no reddening
   // sun: limb-darkened disc + circumsolar halo, added in HDR so the noon
   // disc saturates white through the tonemap and only reddens when the
   // transmittance does
@@ -739,7 +743,7 @@ void main() {
     float ld = 0.35 + 0.65 * sqrt(max(0.0, 1.0 - x * x));
     L += Tv * ld * 60.0;
   }
-  L += hitG * Tv * 0.20 * exp(-pow(ang / (SUNR * 4.0), 1.7));
+  L += hitG * Tv * 0.20 * exp(-pow(ang / (SUNR * 4.0), 1.7)) * (1.0 - uVac);
   // moon: a grey sphere lit by the actual sun direction, so the phase and
   // the crescent's orientation are the real ones; earthshine floor keeps
   // the dark limb faintly visible at night
@@ -765,7 +769,7 @@ void main() {
 }`;
 
 /* ---------- renderer ---------- */
-const GLOBE_BUILD = "2026-08-18k";
+const GLOBE_BUILD = "2026-08-18l";
 class Globe {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -804,6 +808,10 @@ class Globe {
     // planets, stars and day/night follow the SIMULATED wall clock during
     // a flight; null falls back to real time
     this.simTime = null;
+    // vacuum mode: the app ties this to the air-resistance toggle. True
+    // kills the sky shaders (black space), fog and aerial perspective, and
+    // lets stars show in daylight: an airless world looks like the moon's.
+    this.vacuum = false;
     // performance knobs, instance-level so mobileProfile() can lower them
     this.maxDpr = Infinity;      // canvas resolution cap (phones ship dpr 3)
     this.refineBase = REFINE_PX; // the governor's fine-detail floor
@@ -1920,6 +1928,10 @@ class Globe {
       gl.uniform1i(u.uSkyV, 4);
       gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this.tTrans);
       gl.uniform1i(u.uT, 6);
+      gl.uniform1f(u.uVac, this.vacuum ? 1 : 0);
+    } else if (this.vacuum) {
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
     } else {
       gl.useProgram(this.pSky.p);
       const u = this.pSky.u;
@@ -1934,7 +1946,7 @@ class Globe {
     gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuf);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (useH || !this.vacuum) gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     // stars: additive over the sky, before terrain (which overdraws them).
     // In daylight below ~1.5 km the pass provably contributes nothing (every
@@ -1942,8 +1954,8 @@ class Globe {
     // shader's sky term saturates at 1 and uNight is 0, so vA = 0 for all
     // 9,096 points), so the pass and the per-frame planet ephemeris are
     // skipped there rather than drawn invisibly.
-    const nightF = useH
-      ? Math.max(0, Math.min(1, (0.02 - this.sunElevNow) / 0.12)) : 0;
+    const nightF = this.vacuum ? 1 : (useH
+      ? Math.max(0, Math.min(1, (0.02 - this.sunElevNow) / 0.12)) : 0);
     const camAltNow = Math.hypot(this.camPos[0], this.camPos[1], this.camPos[2]) - GLOBE_R;
     if (this.starCount && (nightF > 0 || camAltNow > 1200)) {
       gl.enable(gl.BLEND);
@@ -1999,9 +2011,10 @@ class Globe {
       Math.max(0, Math.min(1, alt / 90000)));
     this._fogColNow = fogCol;
     gl.uniform3fv(tu.uFogCol, fogCol);
-    gl.uniform1f(tu.uFogNear, this.fogNear);
-    gl.uniform1f(tu.uFogFar, this.fogFar);
+    gl.uniform1f(tu.uFogNear, this.vacuum ? 1e9 : this.fogNear);
+    gl.uniform1f(tu.uFogFar, this.vacuum ? 2e9 : this.fogFar);
     gl.uniform1i(tu.uMode, useH ? 1 : 0);
+    gl.uniform1f(tu.uVac, this.vacuum ? 1 : 0);
     if (useH) {
       gl.uniform3fv(tu.uSun, this.sunNow);
       gl.uniform3fv(tu.uEarthC, C);
@@ -2465,10 +2478,11 @@ Globe.prototype._renderBuildings = function (list) {
   gl.uniformMatrix4fv(u.uVP, false, this.vp);
   gl.uniform1f(u.uLogF, this.logF);
   gl.uniform3fv(u.uFogCol, this._fogColNow);
-  gl.uniform1f(u.uFogNear, this.fogNear);
-  gl.uniform1f(u.uFogFar, this.fogFar);
+  gl.uniform1f(u.uFogNear, this.vacuum ? 1e9 : this.fogNear);
+  gl.uniform1f(u.uFogFar, this.vacuum ? 2e9 : this.fogFar);
   const useH = this.skyMode === "hillaire" && this.atmoOK && this.sunNow;
   gl.uniform1i(u.uMode, useH ? 1 : 0);
+  gl.uniform1f(u.uVac, this.vacuum ? 1 : 0);
   this._zoneUniforms(u);
   if (useH) {
     gl.uniform3fv(u.uEarthC,

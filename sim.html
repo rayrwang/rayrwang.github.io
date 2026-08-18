@@ -3082,6 +3082,10 @@ function tick(ts) {
     if (isTouch) $("tang").style.display = launchStage === "angle" ? "flex" : "none";
     maybeRefreshWind();
     updateWallClock();
+    // no air, no sky: the atmosphere visualization follows the air-resistance
+    // toggle, so Newton's vacuum looks like one (black space, daylight stars,
+    // no fog, no limb glow)
+    globe.vacuum = !$("dragToggle").checked;
     { // camera readout: 4 decimals ~ 11 m, enough to relocate a view.
       // The last line is the load instrument: fps plus what the frame is
       // actually drawing, so a slow scene tells you WHICH cost it is
