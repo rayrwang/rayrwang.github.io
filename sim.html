@@ -238,6 +238,7 @@
       <option value="sound">Sound of a Krakatoa-sized bang</option>
       <option value="manhole">Manhole cover, Pascal-B (1957)</option>
       <option value="icbm">ICBM, city to city</option>
+      <option value="newton">Newton's cannonball (Everest)</option>
       <option value="falcon9">Falcon 9, ascent to orbit</option>
       <option value="iss">ISS, released in orbit</option>
     </select><span id="badge"></span></span>
@@ -741,6 +742,40 @@ const PRESETS = {
       { prop: 7000,  dry: 700,  isp: 288, ispSL: 288, thr: 270000 },
       { prop: 3000,  dry: 300,  isp: 290, ispSL: 290, thr: 150000 },
     ],
+  },
+  // Newton's cannonball (Principia / De mundi systemate): fire horizontally
+  // from the highest mountain at increasing speeds and the arc becomes an
+  // orbit becomes escape. AIR RESISTANCE IS OFF BY DEFAULT because the
+  // diagram is a vacuum thought experiment and honestly has to be: at the
+  // summit's 8.8 km the air is ~0.47 kg/m^3, and a real 32-pound iron ball
+  // at 7.9 km/s decelerates at ~5,000 m/s^2 (0.5*rho*v^2*Cd*A/m), losing
+  // everything in seconds. No cannonball orbits through sea-level-thick
+  // air; Newton knew, which is why he drew it without air. Tick the box to
+  // watch reality eat the experiment. Speeds (ECEF, so direction matters:
+  // the summit itself moves 410 m/s east with the turning planet):
+  // ~7,500 east = near-circular; 7,900 east = ellipse to ~1,500 km apogee;
+  // 7,900 WEST = 7,490 inertial, falls beyond the horizon (his middle
+  // drawing); 11,200 = escape. Sim terrain reads the summit at ~8,727 m
+  // (z12 smoothing of the true 8,849).
+  newton: {
+    ptype: "ball",
+    site: { lat: 27.9881, lon: 86.925, name: "the summit of Mount Everest" },
+    siteCamAlt: 8500,  // m MSL: spawn beside the peak, not under it (RW)
+    azimuth: 90,       // placeLaunch default; the heading stage re-aims it
+    siteNote: "Newton's thought experiment: the cannon is on Everest's summit. "
+      + "Aim a heading, keep the angle at 0, and try speeds from 6,000 (falls "
+      + "away beyond the horizon) through ~7,500 east (orbit) to 11,200 (escape).",
+    speed: 7500,       // m/s ECEF: near-circular fired due east
+    angle: 0,          // horizontal, as drawn
+    relH: 2,
+    dt: 0.05,          // drag-free two-body RK4 is exact at this step
+    drag: false,       // the vacuum of the diagram; see the note above
+    timeSpeed: 1,      // one revolution is ~84 min; arrows to 300x show it
+    mMass: 14500,      // g: a 32-pounder, the classic big naval ball
+    mDiam: 155,        // mm
+    dragModel: "fixed",
+    mCd: 0.47,         // sphere, subsonic value; moot with the air off
+    mRpm: 0, mCl: 0,
   },
 };
 /* ---------- ballistic-missile mission data ---------- */
@@ -1493,12 +1528,12 @@ function chaseCamera(dt) {
   // keep the camera above ground: lift along local vertical, write back
   let C = V3.add(P, O), lla = rToLLA(C);
   for (let i = 0; i < 3; i++) {
-    const floor = (terrainAt(lla.lat, lla.lon) ?? s.ground0) + 2;
+    const floor = groundUnder(s, lla.lat, lla.lon) + 2;
     if (lla.h >= floor) break;
     O = V3.add(O, V3.scale(V3.unit(C), floor - lla.h));
     C = V3.add(P, O); lla = rToLLA(C);
   }
-  const floorF = (terrainAt(lla.lat, lla.lon) ?? s.ground0) + 2;
+  const floorF = groundUnder(s, lla.lat, lla.lon) + 2;
   if (lla.h < floorF) { C = llToR(lla.lat, lla.lon, floorF); lla = rToLLA(C); O = V3.sub(C, P); }
   chase.off = [V3.dot(O, east), V3.dot(O, north), V3.dot(O, up)];
   cam.lat = lla.lat; cam.lon = lla.lon; cam.alt = lla.h;
@@ -1634,6 +1669,10 @@ function flyHintHtml() {
     return "<b>Left click anywhere</b> starts the count &middot; " + pr.site.name
       + ", azimuth " + pr.azimuth + "&deg;. The pad and heading are part of the mission, "
       + "so where you click does not matter." + esc;
+  if (pr.site)
+    return "Step 1 of 3 &middot; <b>left click anywhere</b>: the cannon is already on "
+      + pr.site.name + ". Then aim the heading, then the angle (keep 0 to fire "
+      + "level, as Newton drew it)." + esc;
   if (oneClick && pr.ptype === "sound")
     return "<b>Left click</b> sets off the bang at the crosshair &middot; the ring expands "
       + "in every direction at the speed of sound, so there is nothing to aim." + esc;
@@ -1688,7 +1727,7 @@ function phaseHtml(s) {
   }
   const vU = V3.dot(s.v, V3.unit(s.r));
   const bl = simLatLon(s);
-  const bg = terrainAt(bl[0], bl[1]) ?? s.ground0;
+  const bg = groundUnder(s, bl[0], bl[1]);
   return T + `<b>Ballistic</b> &middot; ${vU > 0 ? "climbing" : "descending"}, `
     + `${fmtAlt(Math.max(0, simAlt(s) - bg))} AGL`;
 }
@@ -2430,7 +2469,7 @@ function stepSound(s, dt) {
   s.t += dt;
   s.trackLen = s.rad;
   const [lo, la] = destPoint(s.lat0, s.lon0, s.azim, s.rad);
-  const g = terrainAt(la, lo) ?? s.ground0;
+  const g = groundUnder(s, la, lo);
   s.r = llToR(la, lo, g + s.p.relH);
   const { east, north } = enuAt(s.r);
   const br = s.azim*Math.PI/180;
@@ -2912,12 +2951,24 @@ function icbmSolve(padLat, padLon, padElev, target) {
            dvIdeal: veh.dvIdeal, cls: missileClass(range), p };
 }
 
+// Ground under a point, for a flight's purposes. The unknown-terrain
+// fallback is the LAUNCH ground, which is a sensible datum only near the
+// launch: far away it is nonsense, and it bit hard on the Everest
+// cannonball, which read "2 m AGL" over every unloaded ocean tile
+// (8,729 m altitude minus its own 8,727 m pad) and stutter-crawled the
+// whole orbit because the terrain hold believed a landing was imminent
+// everywhere on the planet. Past 50 km from launch, unknown = sea level.
+function groundUnder(s, lat, lon) {
+  return terrainAt(lat, lon)
+    ?? (surfDist(lat, lon, s.lat0, s.lon0) < 50000 ? s.ground0 : 0);
+}
+
 // terrain-ahead prefetching: when low, or after ~2 km of drift, batch-fetch
 // the cells below and ahead along the current velocity
 function terrainMaintenance(s, ll) {
   const known = terrainAt(ll[0], ll[1]);
   const h = simAlt(s);
-  const agl = h - (known ?? s.ground0);
+  const agl = h - groundUnder(s, ll[0], ll[1]);
   const drifted = surfDist(ll[0], ll[1], s.lastTerrainCheckPos[0], s.lastTerrainCheckPos[1]) > 2000;
   const low = agl < 500;
   if ((low || drifted || known == null) && Date.now() - lastElevFetch > 1200) {
@@ -3072,7 +3123,7 @@ function tick(ts) {
     rk4(s, dt);
     checkBurst(s);
     ll = simLatLon(s);
-    const ground = terrainAt(ll[0], ll[1]) ?? s.ground0;
+    const ground = groundUnder(s, ll[0], ll[1]);
     // strictly descending: a rocket sitting on the pad has zero vertical speed
     // at ignition and must not count as having landed on its own launch site
     if (simAlt(s) <= ground && V3.dot(s.v, V3.unit(s.r)) < 0) {
@@ -3100,7 +3151,7 @@ function tick(ts) {
       `just no longer loud enough to hear.`);
   }
   // never-coming-down checks: hovering at equilibrium, or absurd sim time
-  const groundNow = terrainAt(ll[0], ll[1]) ?? s.ground0;
+  const groundNow = groundUnder(s, ll[0], ll[1]);
   const vU = V3.dot(s.v, V3.unit(s.r));
   if (s.phase === "balloon" && simAlt(s) - groundNow > 200 && Math.abs(vU) < 0.03) {
     if (s.calmSince == null) s.calmSince = s.t;
@@ -3246,7 +3297,7 @@ function drawSoundRing(s) {
   const N = 128, pts = [];
   for (let i = 0; i <= N; i++) {
     const [lo, la] = destPoint(s.lat0, s.lon0, i*360/N, s.rad);
-    pts.push([la, lo, (terrainAt(la, lo) ?? s.ground0) + GROUND_LIFT]);
+    pts.push([la, lo, groundUnder(s, la, lo) + GROUND_LIFT]);
   }
   globe.setLines("soundring", [pts], [0.23, 0.55, 0.99, 0.9], 3);
 }
@@ -3285,7 +3336,7 @@ function placeObjectGraphics(s) {
     s.lastTauT = s.t;
   }
   const ll = simLatLon(s), h = simAlt(s);
-  const ground = terrainAt(ll[0], ll[1]) ?? s.ground0;
+  const ground = groundUnder(s, ll[0], ll[1]);
   if (objMarker) objMarker.setPos(ll[0], ll[1], ground + GROUND_LIFT);
   line3d.tagPoint = [ll[0], ll[1], h];
   const { east, north } = enuAt(s.r);
@@ -3374,11 +3425,12 @@ function applyPreset(name) {
   }
   $("aimNote").style.display = (aimless || pr.noAngle) ? "" : "none";
   if (pr.site) {                       // fly the camera to the launch site
-    $("aimNote").textContent = "Launches from " + pr.site.name
-      + " on a " + pr.azimuth + " deg azimuth. Click anywhere to start the count.";
+    $("aimNote").textContent = pr.siteNote || ("Launches from " + pr.site.name
+      + " on a " + pr.azimuth + " deg azimuth. Click anywhere to start the count.");
     $("aimNote").style.display = "";
     cam.lat = pr.site.lat - 0.03; cam.lon = pr.site.lon - 0.03;
-    cam.alt = 2500; cam.yaw = 45; cam.pitch = -25;
+    cam.alt = pr.siteCamAlt ?? 2500;    // Everest's pad needs a high perch
+    cam.yaw = 45; cam.pitch = -25;
     camVel[0] = camVel[1] = camVel[2] = 0;
   } else if (aimless) {
     $("aimNote").textContent = "Released, not aimed: one click places it and lets go.";
