@@ -96,6 +96,31 @@
       white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
   #cityResults div:hover { background:rgba(59,130,246,.35); }
   #cityResults .note { cursor:default; color:#9aa0a8; }
+  /* ICBM mission dialogue: the target city is mandatory, so it opens the
+     moment the preset is picked and blocks the launch until it is answered */
+  #icbmDlg { position:absolute; z-index:30; top:50%; left:50%;
+      transform:translate(-50%,-50%); width:330px; display:none; }
+  #icbmDlg h2 { font-size:14px; margin:0 0 3px; color:#fff; }
+  #icbmCity { width:100%; box-sizing:border-box; padding:6px 10px; border-radius:8px;
+      border:1px solid rgba(255,255,255,.25); background:#1c2128; color:#eee; outline:none; }
+  #icbmResults div { padding:6px 10px; background:rgba(28,33,40,.95); color:#ddd;
+      cursor:pointer; border-top:1px solid rgba(255,255,255,.06);
+      white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  #icbmResults div:hover { background:rgba(59,130,246,.35); }
+  #icbmResults .note { cursor:default; color:#9aa0a8; }
+  #icbmTargetOut { margin:7px 0 2px; color:#f6ad55; font-size:12px; min-height:15px; }
+  /* closing the dialogue leaves this bar under the city search, so the way
+     back is always in the same place and never has to be remembered */
+  #icbmBar { position:absolute; top:48px; left:50%; transform:translateX(-50%);
+      z-index:19; display:none; cursor:pointer; padding:5px 12px; font-size:12px;
+      background:rgba(16,18,22,.88); color:#f6ad55; border-radius:8px;
+      border:1px solid rgba(255,255,255,.18); white-space:nowrap; }
+  #icbmBar:hover { background:rgba(59,130,246,.35); color:#fff; }
+  #icbmDlg .row { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; }
+  /* one coloured dot beside each description, matching the ring on the map */
+  .zoneKey { display:flex; align-items:flex-start; gap:7px; margin:4px 0 0;
+      font-size:11px; line-height:1.35; text-align:left; }
+  .zoneSw { width:12px; height:12px; border-radius:50%; flex:0 0 auto; margin-top:2px; }
 </style>
 </head>
 <body>
@@ -110,6 +135,22 @@
 </div>
 <div id="objTag"></div>
 <div id="objDot"></div>
+
+<div id="icbmBar"></div>
+<div id="icbmDlg" class="panel">
+  <h2>ICBM mission</h2>
+  <div class="hint">Pick the target city. The missile flies itself there, so
+    the only thing left to choose is where it launches from.</div>
+  <input id="icbmCity" type="text" placeholder="Target city..." autocomplete="off" spellcheck="false">
+  <div id="icbmResults"></div>
+  <div id="icbmTargetOut">No target set.</div>
+  <label><span>Warhead</span><select id="icbmWarhead"></select></label>
+  <div class="hint" id="icbmYieldNote" style="margin:2px 0 0"></div>
+  <div class="row">
+    <button class="small" id="icbmCancel">Close</button>
+    <button id="icbmOk" disabled>Set target</button>
+  </div>
+</div>
 
 <div id="ctl" class="panel">
   <h1>Trajectory simulator</h1>
@@ -126,6 +167,7 @@
       <option value="paris">Paris Gun, 1918 (130 km)</option>
       <option value="sound">Sound of a Krakatoa-sized bang</option>
       <option value="manhole">Manhole cover, Pascal-B (1957)</option>
+      <option value="icbm">ICBM, city to city</option>
       <option value="falcon9">Falcon 9, ascent to orbit</option>
       <option value="iss">ISS, released in orbit</option>
     </select><span id="badge"></span></span>
@@ -172,7 +214,7 @@
   <details id="paramsBox">
     <summary>Parameters (preset-managed)</summary>
     <label><span>Projectile</span>
-      <select id="ptype"><option value="balloon">helium balloon</option><option value="ball">ball</option><option value="rocket">rocket (staged, powered)</option><option value="sound">sound wave</option></select></label>
+      <select id="ptype"><option value="balloon">helium balloon</option><option value="ball">ball</option><option value="rocket">rocket (staged, powered)</option><option value="icbm">ICBM (guided)</option><option value="sound">sound wave</option></select></label>
     <label><span>Launch speed (m/s)</span><input id="speed" type="number" step="0.1" min="0"></label>
     <label><span>Release height (m AGL)</span><input id="relH" type="number" step="0.1" min="0"></label>
     <label><span>Integrator dt (s)</span><input id="dtStep" type="number" step="0.001" min="0.0005"></label>
@@ -563,7 +605,122 @@ const PRESETS = {
     mRpm: 0,
     mCl: 0,
   },
+  // A ballistic missile flown from a silo you choose to a city you choose.
+  // Unlike every other preset there is nothing to aim: the target sets the
+  // whole trajectory, and the missile steers itself there the way a real one
+  // does, by comparing the velocity it has against the velocity it needs
+  // (section "guidance" below).
+  //
+  // The vehicle is a GENERIC three-stage solid missile, not a model of any
+  // particular one. Its stage mass fractions and specific impulses are
+  // typical of large solids, and the whole thing is then scaled up or down
+  // so it has the energy for the shot you asked for: a 2,000 km lob needs a
+  // fraction of what a 15,000 km one does, and no single real missile covers
+  // both. What the panel names instead is the CLASS of missile whose
+  // published range covers the distance, which is a citable fact rather than
+  // a guess about the insides of a weapon.
+  icbm: {
+    ptype: "icbm",
+    targeted: true,    // the target city fixes the heading: no aiming stage
+    noAngle: true,     // and no launch angle: the guidance flies the loft
+    speed: 0, angle: 90, relH: 0,
+    dt: 0.05,          // s, boost and reentry; the coast steps coarser (icbmDt)
+    drag: true,
+    timeSpeed: 1,      // real time, like every other preset. A shot is half
+                       // an hour long, so the arrow keys earn their keep here.
+    area: 3.6,         // m^2, a 2.15 m diameter first stage
+    rvMass: 400,       // kg, one reentry vehicle after the bus lets go
+    rvDiam: 0.55,      // m, base diameter of a cone that size
+    rvCd: 0.15,        // blunted cone at hypersonic speed, on base area. This
+                       // gives a ballistic coefficient near 10,000 kg/m^2,
+                       // which is why an RV arrives at several km/s instead
+                       // of slowing to terminal velocity like a bomb.
+    busMass: 600,      // kg, post-boost vehicle, gone at final burnout
+    vertUntil: 8,      // s of vertical rise before the missile starts turning
+    progUntil: 70,     // s, end of the pitch program: closed-loop from here
+    sepDelay: 1.5,     // s between one stage burning out and the next lighting
+    // per stage: propellant, dry mass, vacuum/sea-level Isp, vacuum thrust.
+    // All four scale together with the vehicle, so burn times and thrust to
+    // weight stay put while the missile grows.
+    stages: [
+      { prop: 26000, dry: 2400, isp: 265, ispSL: 240, thr: 800000 },
+      { prop: 7000,  dry: 700,  isp: 288, ispSL: 288, thr: 270000 },
+      { prop: 3000,  dry: 300,  isp: 290, ispSL: 290, thr: 150000 },
+    ],
+  },
 };
+/* ---------- ballistic-missile mission data ---------- */
+// Which missile has the legs for a given shot. Ranges are the published or
+// claimed figures, in the round numbers the open sources give; they are
+// there to name a class, not to be a specification. The treaty labels are
+// the standard ones: under 1,000 km short-range, 1,000-3,000 medium,
+// 3,000-5,500 intermediate, above 5,500 intercontinental.
+const MISSILE_CLASSES = [
+  { max: 300,   name: "Scud-B",        kind: "short-range ballistic missile", range: "300 km" },
+  { max: 500,   name: "Iskander-M",    kind: "short-range ballistic missile", range: "500 km" },
+  { max: 1770,  name: "Pershing II",   kind: "medium-range ballistic missile", range: "1,770 km" },
+  { max: 2150,  name: "DF-21",         kind: "medium-range ballistic missile", range: "2,150 km" },
+  { max: 4000,  name: "DF-26",         kind: "intermediate-range ballistic missile", range: "4,000 km" },
+  { max: 5800,  name: "Agni-V",        kind: "intercontinental ballistic missile", range: "5,800 km" },
+  { max: 12000, name: "Trident II D5", kind: "submarine-launched ICBM", range: "12,000 km" },
+  { max: 13000, name: "Minuteman III", kind: "intercontinental ballistic missile", range: "13,000 km" },
+  { max: 15000, name: "DF-41",         kind: "intercontinental ballistic missile", range: "15,000 km" },
+  { max: 18000, name: "RS-28 Sarmat",  kind: "intercontinental ballistic missile", range: "18,000 km (claimed)" },
+];
+// Past the last row nothing fielded reaches, and the reason is worth stating:
+// the far side of the planet is 20,015 km away, and a minimum-energy shot
+// that far needs circular orbital speed exactly. So the answer stops being a
+// missile and becomes a launch vehicle: fly a partial orbit and come down
+// where you like. The Soviet R-36-O did this in the 1960s (a fractional
+// orbital bombardment system, banned by SALT II in 1979 and withdrawn), and
+// the modern equivalent of that much energy is an orbital booster.
+function missileClass(rangeM) {
+  const km = rangeM / 1000;
+  for (const c of MISSILE_CLASSES) if (km <= c.max) return c;
+  return { name: "no fielded missile", kind: "fractional orbital bombardment",
+           range: "unlimited: it goes to orbit first",
+           note: "Beyond every missile ever deployed. At this range the shot "
+               + "needs orbital speed, so it takes a launch vehicle (a Falcon 9 "
+               + "class booster) or the retired Soviet R-36-O orbital system." };
+}
+
+// Warheads, by yield. The default is the one actually sitting on a
+// Minuteman III today. Yields are the published figures for each device.
+const WARHEADS = [
+  { id: "w76-2", kt: 8,     name: "W76-2, 8 kt (low-yield Trident)" },
+  { id: "lb",    kt: 15,    name: "Little Boy, 15 kt (Hiroshima)" },
+  { id: "w87",   kt: 300,   name: "W87, 300 kt (Minuteman III)" },
+  { id: "w88",   kt: 475,   name: "W88, 475 kt (Trident II)" },
+  { id: "b83",   kt: 1200,  name: "B83, 1.2 Mt (largest US stockpile)" },
+  { id: "ss18",  kt: 20000, name: "SS-18 single RV, 20 Mt" },
+  { id: "tsar",  kt: 50000, name: "Tsar Bomba, 50 Mt (largest ever fired)" },
+];
+// Effects radii for an air burst at about the height that maximises the
+// blast area, in metres. Blast scales as the cube root of yield (a bomb a
+// thousand times bigger reaches ten times as far, which is why yield buys so
+// little area); the thermal radius grows a little faster than that because
+// it is limited by geometry rather than by the shock. Coefficients are the
+// standard Glasstone-and-Dolan scalings, checked against Hiroshima at 15 kt
+// and against 1 Mt: 20 psi 2.8 km, 5 psi 6.2 km, burns 11 km, 1 psi 17.5 km.
+// They are least trustworthy at the extreme yields, where the fireball stops
+// being small compared with the atmosphere.
+function blastRadii(kt) {
+  const cbrt = Math.cbrt(kt);
+  return {
+    fireball: 77.5 * Math.pow(kt, 0.4),
+    heavy:   280 * cbrt,          // 20 psi: even reinforced buildings go
+    severe:  620 * cbrt,          // 5 psi: ordinary buildings collapse
+    burns:   663 * Math.pow(kt, 0.41),   // third-degree burns on bare skin
+    light:  1750 * cbrt,          // 1 psi: windows out, injuries from glass
+  };
+}
+const ZONE_COLORS = {
+  heavy:  [0.88, 0.11, 0.07, 0.62],
+  severe: [0.97, 0.45, 0.06, 0.50],
+  burns:  [0.98, 0.86, 0.18, 0.40],
+  light:  [0.62, 0.65, 0.69, 0.32],
+};
+
 // Fields the presets manage; editing any of them marks the preset "modified".
 const PRESET_FIELDS = ["ptype","speed","angle","relH","dt","drag",
   "bDiam","bLatex","bCd","bStretch","bBurstAlt","bScrapCd","bScrapArea",
@@ -1107,7 +1264,7 @@ function moveCamera(dt) {
 // straight along the velocity (where it is going) and straight at the
 // object itself; halfway keeps both the projectile and its destination in
 // frame, where either extreme loses one of them.
-const CHASE_DIST = { balloon: 60, ball: 80, rocket: 500 };
+const CHASE_DIST = { balloon: 60, ball: 80, rocket: 500, icbm: 900 };
 const CHASE_RIGHT = 0.25, CHASE_UP = 0.20;
 function chaseCamera() {
   const s = sim;
@@ -1161,9 +1318,13 @@ function chaseCamera() {
   // object and gives up the rest of the lead.
   const L = V3.unit(V3.sub(P, C));
   const T = Math.acos(Math.max(-1, Math.min(1, V3.dot(F, L))));
-  // 8.9 deg is exactly what the undistorted rig produces, so a distorted
-  // one never frames the object worse than a clean one
-  const AIM_MAX = 8.9*Math.PI/180;
+  // How far the crosshair leads the object. The rig sits up and to the
+  // right, so leading puts the object just down-left of the centre and
+  // leaves the space it is flying into visible. It used to lead by the full
+  // 8.9 degrees the offset produces, which pushed the object noticeably off
+  // centre; 3 degrees keeps the lead readable and the object nearly centred
+  // (RW, 2026-08-18).
+  const AIM_MAX = 3*Math.PI/180;
   let A = L;
   if (T > 1e-4) {
     const f = Math.min(0.5, AIM_MAX/T);            // 0.5 = the halfway rule
@@ -1232,6 +1393,16 @@ function flyHintHtml() {
       + "double-tap-W sprints, scroll trims speed). <b>T</b> pauses, <b>arrow left/right</b> "
       + "sets time speed. <b>Esc</b> returns here.";
   if (launchStage === "heading") {
+    if (pr.targeted) {
+      if (!icbmSol || icbmSol.solving)
+        return "Step 2 of 2 &middot; solving the trajectory to <b>"
+          + (icbmTarget ? icbmTarget.name : "the target") + "</b>...";
+      if (icbmSol.error) return icbmSol.error + " <b>Right click</b> to move the silo.";
+      return "Step 2 of 2 &middot; <b>" + fmtDist(icbmSol.range) + "</b> to <b>"
+        + icbmSol.target.name + "</b>, apogee " + fmtAlt(icbmSol.apogee)
+        + ", flight time " + fmtClock(icbmSol.tof) + " &middot; <b>left click</b> "
+        + "launches, <b>right click</b> moves the silo.";
+    }
     if (pr.orbital)
       return "Step 2 of 2 &middot; <b>heading " + Math.round(launch.heading) + "&deg;</b>: "
         + "look along the ground track, <b>left click</b> deploys it in orbit "
@@ -1256,6 +1427,12 @@ function flyHintHtml() {
     return "Flying &middot; <b>T</b> pauses, <b>arrow left/right</b> changes time speed, "
       + "<b>follow object</b> rides the chase camera. <b>Left click</b> starts a new launch.";
   const esc = " <b>Esc</b> opens the menu.";
+  if (pr.targeted)
+    return icbmTarget
+      ? "Step 1 of 2 &middot; <b>left click</b> puts the silo at the crosshair; "
+        + "it then flies itself to <b>" + icbmTarget.name + "</b>." + esc
+      : "<b>Pick a target city first</b> &middot; the dialogue is in the middle "
+        + "of the screen, and a click on the map reopens it." + esc;
   if (pr.site && oneClick)
     return "<b>Left click anywhere</b> starts the count &middot; " + pr.site.name
       + ", azimuth " + pr.azimuth + "&deg;. The pad and heading are part of the mission, "
@@ -1281,6 +1458,7 @@ function flyHintHtml() {
 // disagrees with the flight.
 function phaseHtml(s) {
   const T = "T+" + fmtClock(s.t) + " &middot; ";
+  if (s.phase === "boost" || s.phase === "rv") return icbmPhaseHtml(s, T);
   if (s.phase === "rocket") {
     if (s.done && s.orbit)
       return T + `<b>In orbit</b> &middot; ${Math.round(s.orbit.perigee/1000)} &times; `
@@ -1338,7 +1516,12 @@ function ensureGhost() {
 function hideGhost() { if (ghostMarker) ghostMarker.el.style.display = "none"; }
 
 function updateGhost() {
-  if (!locked || launchStage !== "free") { hideGhost(); return; }
+  // While the chase camera is actually flying the view, the crosshair is not
+  // a placement tool: a click there hands the controls back rather than
+  // setting a launch point, so the ghost pin should not be following it and
+  // implying otherwise. Ticking the box before a flight leaves it alone.
+  if (!locked || launchStage !== "free"
+      || (simStatus === "flying" && $("followToggle").checked)) { hideGhost(); return; }
   const pt = centerGroundPoint();
   if (!pt) { hideGhost(); return; }
   const g = ensureGhost();
@@ -1347,6 +1530,8 @@ function updateGhost() {
 }
 
 function placeLaunch(lat, lon) {
+  // a targeted preset needs its target before anything else can happen
+  if (PRESETS[$("preset").value]?.targeted && !icbmArmed) { icbmOpen(!!icbmTarget); return; }
   clearRun();
   // A preset with a fixed site owns its own launch point and azimuth: you do not
   // get to choose where a Falcon 9 lifts off from, and the azimuth is set by the
@@ -1369,6 +1554,14 @@ function placeLaunch(lat, lon) {
     return;
   }
   launchStage = "heading";
+  if (PRESETS[$("preset").value]?.targeted) {
+    // nothing to aim: the target sets the heading, so this stage is only a
+    // look at the solved trajectory before committing to it
+    launch.heading = bearingDeg(lat, lon, icbmTarget.lat, icbmTarget.lon);
+    $("headingOut").textContent = launch.heading.toFixed(0) + "°";
+    icbmSolveForPad();
+    return;
+  }
   setHint("Aim: left click locks the heading. Right click steps back.");
 }
 
@@ -1384,6 +1577,11 @@ function ladderAdvance() {           // left click under pointer lock
   if (launchStage === "free") {
     const pt = centerGroundPoint();
     if (pt) placeLaunch(pt.lat, pt.lng);
+  } else if (launchStage === "heading" && PRESETS[$("preset").value]?.targeted) {
+    if (!icbmSol || icbmSol.solving) { setHint("Still solving the trajectory."); return; }
+    if (icbmSol.error) { setHint(icbmSol.error); return; }
+    launchStage = "angle";          // freeze the ladder, then launch
+    doFire();
   } else if (launchStage === "heading") {
     // a noAngle preset (orbit deploy, rocket ascent) has no angle stage.
     // Leave the heading stage BEFORE the (async) doFire, or the live aim
@@ -1432,6 +1630,8 @@ function resolveLaunchElev() {
 // drawn a couple of meters above the pin's terrain
 function updateAimArrow() {
   if (launchStage !== "heading") return;
+  // a targeted preset's heading belongs to the target, not to the crosshair
+  if (PRESETS[$("preset").value]?.targeted) return;
   const pt = centerGroundPoint();
   if (!pt) return;                       // aiming at sky: keep the last arrow
   const brg = bearingDeg(launch.lat, launch.lon, pt.lat, pt.lng);
@@ -1631,6 +1831,7 @@ function clearRun() {
   globe.clearLines("shadow");
   line3d.clear("track"); line3d.clear("drop"); line3d.clear("vel");
   line3d.clear("velg"); line3d.clear("ghost"); globe.clearLines("soundring");
+  globe.clearZones("blast");
   line3d.tagPoint = null; $("objTag").style.display = "none"; $("objDot").style.display = "none";
   trackShadow = null; track3d = null; velArrowState = null; liveTail = null;
   $("landPanel").style.display = "none";
@@ -1654,7 +1855,8 @@ function readParams() {
     for (const k of ["r1","r2","payload","fairing","fairingT","sepDelay","area",
                      "qStart","qEnd","qThrottle","gLimit","vertUntil","kickUntil",
                      "kickDeg","targetAlt","guideTau","site","azimuth","audibleKm",
-                     "orbital","noAngle"])
+                     "orbital","noAngle","targeted","stages","rvMass","rvDiam",
+                     "rvCd","busMass","progUntil"])
       if (k in pr) p[k] = pr[k];
   }
   return p;
@@ -1681,6 +1883,7 @@ function makeState(p, lat, lon, g0, headingDeg, angleDeg, preview) {
     r: r0, v: v0,
     phase: p.ptype === "balloon" ? "balloon"
          : p.ptype === "rocket" ? "rocket"
+         : p.ptype === "icbm" ? "boost"
          : p.ptype === "sound" ? "sound" : "ball",
     trackLen: 0, calmSince: null, burstInfo: null,
     lastTrackT: -1, lastTrack3dT: -1, lastTerrainCheckPos: [lat, lon],
@@ -1688,6 +1891,16 @@ function makeState(p, lat, lon, g0, headingDeg, angleDeg, preview) {
   if (p.ptype === "sound") {
     s.rad = 0;
     s.azim = headingDeg;          // the bearing of the point the HUD follows
+  } else if (p.ptype === "icbm") {
+    // the vehicle and the aim point both come from the pre-launch solve
+    s.veh = p.veh; s.aim = p.aim;
+    s.stage = 0; s.burning = true; s.sepAt = null;
+    s.azim = headingDeg;
+    s.mass = p.rvMass + p.busMass
+           + s.veh.stages.reduce((a, st) => a + st.prop + st.dry, 0);
+    s.m0 = s.mass;
+    s.prop = s.veh.stages[0].prop;
+    s.log = []; s.maxQ = null; s.vgo = 0; s.dvSpent = 0; s.vgo0 = null;
   } else if (p.ptype === "rocket") {
     s.stage = 1; s.burning = true; s.done = false; s.fairingGone = false;
     s.azim = headingDeg;                    // the launch azimuth steers the turn
@@ -1727,6 +1940,12 @@ async function doFire() {
   line3d.clear("ghost"); line3d.clear("aimup");
   globe.clearLines("aim");
   const p = readParams();
+  if (p.ptype === "icbm") {
+    // the vehicle size and the aim point are the pre-launch solution's, not
+    // the preset's: the preset only carries the design they were scaled from
+    if (!icbmSol || !icbmSol.ok) { setHint("No trajectory solution yet."); return; }
+    p.veh = icbmSol.veh; p.aim = icbmSol.aim;
+  }
   const s = makeState(p, launch.lat, launch.lon, g0, launch.heading, p.angle, false);
   sim = s; simStatus = "flying";
   playing = true; stepCarry = 0;
@@ -1806,6 +2025,30 @@ function accel(s, r, v) {
       s._cd = cd; s._q = 0.5*atm.rho*rs*rs;           // dynamic pressure, for max Q
       F = V3.add(F, V3.scale(vrel, -0.5*atm.rho*cd*p.area*rs));
     }
+  } else if (s.phase === "boost") {
+    // Powered flight under the guidance of icbmGuide: thrust magnitude and
+    // direction were both fixed at the top of this step, so all that is left
+    // here is to add weight and drag.
+    mEff = s.mass;
+    F = V3.scale(s.gDir || up, (s._thr || 0)*(s._thrScale ?? 1));
+    F = V3.add(F, V3.scale(up, -mEff*gLoc));
+    if (p.drag && rs > 1e-9) {
+      const cd = machCd(rs/SOUND(atm.T));
+      s._cd = cd; s._q = 0.5*atm.rho*rs*rs;
+      F = V3.add(F, V3.scale(vrel, -0.5*atm.rho*cd*p.area*rs));
+    }
+  } else if (s.phase === "rv") {
+    // A reentry vehicle is a dense cone: about 10,000 kg per square metre of
+    // drag area, roughly a thousand times a falling person. That is why it
+    // arrives at kilometres per second instead of slowing to a terminal
+    // velocity, and why the last hundred kilometres take about half a minute.
+    mEff = p.rvMass;
+    F = V3.scale(up, -mEff*gLoc);
+    if (p.drag && rs > 1e-9) {
+      s._cd = p.rvCd; s._q = 0.5*atm.rho*rs*rs;
+      const area = Math.PI/4*p.rvDiam*p.rvDiam;
+      F = V3.add(F, V3.scale(vrel, -0.5*atm.rho*p.rvCd*area*rs));
+    }
   } else if (s.phase === "balloon") {
     // envelope expands with the fixed helium mass at ambient p, T
     const V = s.mHe * R_HE * atm.T / atm.p;
@@ -1864,6 +2107,8 @@ function stepSound(s, dt) {
 
 function rk4(s, dt) {
   if (s.phase === "sound") return stepSound(s, dt);
+  // one guidance cycle per step, held across the four stage evaluations
+  if (s.phase === "boost") icbmGuide(s, dt);
   const r = s.r, v = s.v;
   const a1 = accel(s, r, v);
   const v2 = V3.add(v, V3.scale(a1, dt/2)), r2 = V3.add(r, V3.scale(v, dt/2));
@@ -1877,6 +2122,7 @@ function rk4(s, dt) {
   s.v = V3.add(v, V3.scale(V3.add(V3.add(a1, V3.scale(V3.add(a2, a3), 2)), a4), dt/6));
   s.t += dt;
   if (s.phase === "rocket") rocketEvents(s, dt);
+  else if (s.phase === "boost") icbmEvents(s, dt);
   const upc = V3.unit(s.r);
   const drH = V3.sub(dr, V3.scale(upc, V3.dot(dr, upc)));
   s.trackLen += V3.norm(drH);
@@ -1973,6 +2219,366 @@ function rocketEvents(s, dt) {
   if (s._q && s._q > (s.maxQ ? s.maxQ.q : 0)) s.maxQ = { q: s._q, t: s.t, alt: simAlt(s) };
 }
 
+/* ---------- ballistic missile: guidance, staging, targeting ---------- */
+// A ballistic missile spends about three minutes under power and the next
+// half hour falling, so essentially all of the accuracy is decided at engine
+// cutoff. The guidance below is the classical one: at every step, work out
+// what velocity WOULD carry the missile to the target from where it is right
+// now, subtract the velocity it already has, and thrust along the difference.
+// When the difference reaches zero the engine stops. That single idea copes
+// with everything the flight throws at it (gravity losses, drag, the Earth
+// turning under the trajectory) without any of it being modelled explicitly.
+
+// The velocity needed at R1 to reach R2 on the least-energetic ellipse that
+// connects them, plus how long that takes. Both vectors are inertial. This
+// is the minimum-energy case of Lambert's problem, which has a closed form:
+// the transfer's semi-major axis is half the triangle's semi-perimeter, and
+// the f and g series then give the velocity directly.
+function minEnergyVreq(R1, R2) {
+  const r1 = V3.norm(R1), r2 = V3.norm(R2);
+  const cosd = Math.max(-1, Math.min(1, V3.dot(R1, R2)/(r1*r2)));
+  const dnu = Math.acos(cosd), sind = Math.sin(dnu);
+  if (sind < 1e-4) return null;      // same point, or so near antipodal that
+                                     // the transfer plane is undefined
+  const c = Math.sqrt(Math.max(0, r1*r1 + r2*r2 - 2*r1*r2*cosd));
+  const semi = (r1 + r2 + c)/2;
+  const aMin = semi/2;
+  const p = r1*r2*(1 - cosd)/c;
+  const f = 1 - (r2/p)*(1 - cosd);
+  const g = r1*r2*sind/Math.sqrt(GM*p);
+  const beta = 2*Math.asin(Math.sqrt(Math.max(0, (semi - c)/semi)));
+  return { v: V3.scale(V3.sub(R2, V3.scale(R1, f)), 1/g),
+           tof: Math.sqrt(aMin**3/GM)*(Math.PI - beta + Math.sin(beta)),
+           apogee: aMin*(1 + Math.sqrt(Math.max(0, 1 - p/aMin))) - R_EARTH };
+}
+function rotZ(v, ang) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  return [c*v[0] - s*v[1], s*v[0] + c*v[1], v[2]];
+}
+
+// The velocity needed at R1 to reach R2 leaving at a chosen angle above the
+// local horizontal. Minimum energy is one particular choice of that angle;
+// being able to pick a different one matters at very long range, where the
+// least-energy path leaves and arrives almost horizontally and the warhead
+// skims the top of the atmosphere for hundreds of kilometres instead of
+// coming down. Lofting the shot costs a few percent more speed and arrives
+// steeply, which is both what real systems do and the only way the impact
+// point stays predictable out there.
+//
+// Everything below is the orbit equation written twice, once for each end of
+// the arc, and solved for the semi-latus rectum:
+//   r = p/(1 + e cos v)   at both points, with tan(angle) = e sin v/(1 + e cos v)
+function vreqAtAngle(R1, R2, phi) {
+  const r1 = V3.norm(R1), r2 = V3.norm(R2);
+  const uR = V3.scale(R1, 1/r1);
+  const cosd = Math.max(-1, Math.min(1, V3.dot(R1, R2)/(r1*r2)));
+  const dnu = Math.acos(cosd), sind = Math.sin(dnu);
+  if (sind < 1e-6) return null;                  // the plane is undefined
+  const horiz = V3.sub(R2, V3.scale(uR, V3.dot(R2, uR)));
+  const hn = V3.norm(horiz);
+  if (hn < 1) return null;
+  const uH = V3.scale(horiz, 1/hn);              // in plane, level, downrange
+  const den = cosd/r1 - Math.tan(phi)*sind/r1 - 1/r2;
+  const p = (cosd - 1)/den;
+  if (!(p > 0)) return null;
+  const v1 = Math.sqrt(GM*p)/(r1*Math.cos(phi));
+  const v = V3.add(V3.scale(uH, v1*Math.cos(phi)), V3.scale(uR, v1*Math.sin(phi)));
+  const a = 1/(2/r1 - v1*v1/GM);
+  if (!(a > 0)) return null;                     // escape: not a ballistic shot
+  const ecc = Math.sqrt(Math.max(0, 1 - p/a));
+  const nu1 = Math.atan2((p/r1)*Math.tan(phi), p/r1 - 1);
+  const mean = nu => {
+    const E = 2*Math.atan2(Math.sqrt(1 - ecc)*Math.sin(nu/2),
+                           Math.sqrt(1 + ecc)*Math.cos(nu/2));
+    return E - ecc*Math.sin(E);
+  };
+  let dM = mean(nu1 + dnu) - mean(nu1);
+  while (dM < 0) dM += 2*Math.PI;
+  return { v, tof: Math.sqrt(a**3/GM)*dM, apogee: a*(1 + ecc) - R_EARTH, a, ecc };
+}
+// How steep to leave. The least-energy angle is 45 degrees minus a quarter of
+// the range angle, which goes to nothing as the target approaches the far
+// side of the planet; the floor keeps the arc steep enough to arrive on
+// something rather than graze past it.
+function icbmLoftAngle(R1, R2) {
+  const cosd = Math.max(-1, Math.min(1,
+    V3.dot(R1, R2)/(V3.norm(R1)*V3.norm(R2))));
+  return Math.max(18*Math.PI/180, Math.PI/4 - Math.acos(cosd)/4);
+}
+// Same thing, but the target is a point on a turning planet: it will have
+// moved by the time the warhead arrives, and how far it moves depends on the
+// flight time, which depends on where you aim. Three passes converge to well
+// under a second. Everything here is done in the frame that lines up with
+// the Earth-fixed frame at this instant, so the target's Earth-fixed vector
+// only has to be rotated forward by the remaining flight time.
+function icbmRequired(r, aim) {
+  let tof = 1200, sol = null;
+  for (let i = 0; i < 5; i++) {
+    const led = rotZ(aim, OMEGA*tof);
+    sol = vreqAtAngle(r, led, icbmLoftAngle(r, led));
+    if (!sol) return null;
+    if (Math.abs(sol.tof - tof) < 0.25) break;
+    tof = sol.tof;
+  }
+  return sol;
+}
+
+// One guidance update, held for the whole integration step the way a real
+// autopilot holds an attitude between cycles.
+function icbmGuide(s, dt) {
+  const p = s.p;
+  const req = icbmRequired(s.r, s.aim);
+  if (!req) { s.vgo = 0; s.burning = false; return; }
+  const vIn = V3.add(s.v, V3.cross([0, 0, OMEGA], s.r));
+  const vgo = V3.sub(req.v, vIn);
+  const mag = V3.norm(vgo);
+  s.vgo = mag; s.reqTof = req.tof; s.reqApogee = req.apogee;
+  if (!s.burning) return;
+  if (s.vgo0 == null) s.vgo0 = mag;      // what the whole mission needs
+  const { up } = enuAt(s.r);
+  let dir = V3.scale(vgo, 1/Math.max(mag, 1e-9));
+  // Off the pad the missile holds vertical, then turns over into the
+  // guidance direction across the pitch program. Steering straight at the
+  // required velocity from a standing start would point the nose nearly
+  // horizontal while still in thick air.
+  //
+  // The program is measured in velocity spent rather than in seconds,
+  // because the same missile flies missions of very different size here: a
+  // 700 km lob is over before a 12,000 km shot has finished turning. As a
+  // fraction of the total the flight needs, the turn always happens at the
+  // same point in the burn.
+  const f = s.dvSpent/Math.max(1, s.vgo0);
+  if (f < 0.05 || s.t < p.vertUntil) dir = up;
+  else if (f < 0.40) {
+    const b = (f - 0.05)/0.35;
+    dir = V3.unit(V3.add(V3.scale(up, 1 - b), V3.scale(dir, b)));
+  }
+  // never command a nose-down attitude while there is still air to fly it into
+  const vert = V3.dot(dir, up);
+  if (simAlt(s) < 100000 && vert < 0.05)
+    dir = V3.unit(V3.add(dir, V3.scale(up, 0.05 - vert)));
+  s.gDir = dir;
+  // thrust falls with ambient pressure exactly as the rocket preset's does
+  const st = s.veh.stages[s.stage];
+  const atm = atmAt(simAlt(s));
+  const thr = st.thr - (atm.p/101325)*(st.thr - st.thr*st.ispSL/st.isp);
+  s._thr = thr;
+  s._mdot = thr/(9.80665*st.isp);
+  s._acc = thr/s.mass/9.80665;
+  // Cutoff has to be sharp: one metre per second of extra speed moves the
+  // impact point by several kilometres at intercontinental range. So the
+  // last step burns only the fraction of itself that nulls what is left.
+  const dv = thr/s.mass*dt;
+  s._thrScale = 1;
+  // and not before the vehicle has done most of the job: early in the burn
+  // the required velocity swings about as the trajectory takes shape, and a
+  // transient must not be read as "we are there"
+  if (mag < dv && s.dvSpent > 0.5*s.vgo0) { s._thrScale = mag/dv; s._cutAfter = true; }
+}
+
+// staging, cutoff and the step size, all after the integrator has moved
+function icbmEvents(s, dt) {
+  const p = s.p;
+  if (s.phase !== "boost") return;
+  if (s.burning) {
+    const used = s._mdot*(s._thrScale ?? 1)*dt;
+    s.dvSpent += s._thr*(s._thrScale ?? 1)/s.mass*dt;   // drives the pitch program
+    s.mass -= used; s.prop -= used;
+    const st = s.veh.stages[s.stage];
+    if (s._cutAfter) {                       // the guidance is satisfied
+      s.burning = false;
+      s.log.push({ t: s.t, e: "final cutoff", alt: simAlt(s), v: V3.norm(s.v) });
+      s.propLeft = s.prop;
+      icbmSeparate(s);
+    } else if (s.prop <= 0) {
+      s.burning = false;
+      if (s.stage >= s.veh.stages.length - 1) {   // out of missile, still short
+        s.shortfall = s.vgo;
+        s.log.push({ t: s.t, e: "propellant exhausted", alt: simAlt(s), v: V3.norm(s.v) });
+        icbmSeparate(s);
+      } else {
+        s.log.push({ t: s.t, e: `stage ${s.stage + 1} burnout`, alt: simAlt(s), v: V3.norm(s.v) });
+        s.sepAt = s.t + p.sepDelay;
+      }
+    }
+  } else if (s.sepAt != null && s.t >= s.sepAt) {
+    s.mass -= s.veh.stages[s.stage].dry;       // the spent stage drops away
+    s.stage++;
+    s.prop = s.veh.stages[s.stage].prop;
+    s.burning = true; s.sepAt = null;
+    s.log.push({ t: s.t, e: `stage ${s.stage + 1} ignition`, alt: simAlt(s), v: V3.norm(s.v) });
+  }
+  if (s._q && s._q > (s.maxQ ? s.maxQ.q : 0)) s.maxQ = { q: s._q, t: s.t, alt: simAlt(s) };
+}
+// everything except the warhead is left behind: what flies on is one cone
+function icbmSeparate(s) {
+  s.phase = "rv";
+  s.burnoutV = V3.norm(V3.add(s.v, V3.cross([0, 0, OMEGA], s.r)));
+  s.burnoutT = s.t; s.burnoutAlt = simAlt(s);
+  s.mass = s.p.rvMass;
+  s._thr = 0; s._mdot = 0; s._acc = 0;
+  s.log.push({ t: s.t, e: "reentry vehicle separation", alt: simAlt(s), v: V3.norm(s.v) });
+}
+// Step size by phase. Powered flight and reentry are where the forces
+// change fast, so they run at the preset's step; the coast between them is
+// an undisturbed Kepler arc, where a much coarser step is indistinguishable
+// (a thousand steps per orbit already resolves it to millimetres) and saves
+// most of the work in the pre-launch solve.
+function icbmDt(s) {
+  if (s.phase === "boost") return s.p.dt;
+  return simAlt(s) > 100000 ? (s.coarse ? 2 : 0.1) : s.p.dt;
+}
+
+// Scale the generic vehicle until it has the energy for this shot. Stage
+// mass fractions and specific impulses stay fixed, so what changes is size:
+// the same design, built bigger. Bisection, because ideal velocity rises
+// monotonically with the scale factor.
+function icbmVehicle(p, dvNeed) {
+  const payload = p.rvMass + p.busMass;
+  // How many stages the shot is worth. Staging buys velocity by throwing away
+  // empty casing, and it costs burn time, which is paid for in gravity losses
+  // (every second under thrust is a second of gravity pulling the speed back
+  // out). Short shots are therefore single-stage in real arsenals and long
+  // ones are three, which is what this reproduces.
+  const nStages = dvNeed < 4000 ? 1 : dvNeed < 7000 ? 2 : 3;
+  const set = p.stages.slice(0, nStages);
+  const dvOf = k => {
+    let m = payload;
+    for (const st of set) m += (st.prop + st.dry)*k;
+    let dv = 0;
+    for (const st of set) {
+      const mEnd = m - st.prop*k;
+      dv += st.isp*9.80665*Math.log(m/mEnd);
+      m = mEnd - st.dry*k;
+    }
+    return dv;
+  };
+  let lo = 0.02, hi = 30;
+  if (dvOf(hi) < dvNeed) return null;              // beyond even this design
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi)/2;
+    if (dvOf(mid) < dvNeed) lo = mid; else hi = mid;
+  }
+  const k = hi;
+  const stages = set.map(st => ({ prop: st.prop*k, dry: st.dry*k,
+    isp: st.isp, ispSL: st.ispSL, thr: st.thr*k }));
+  const m0 = payload + stages.reduce((a, st) => a + st.prop + st.dry, 0);
+  return { k, stages, m0, dvIdeal: dvOf(k), dvNeed };
+}
+
+// fly a solved state all the way to the ground; used only by the pre-launch
+// targeting pass, since the live flight is stepped by the main loop
+function icbmFlyOut(s, ground) {
+  const wall = performance.now() + 5000;
+  let apogee = 0;
+  const pts = [];
+  let lastSamp = -1e9;
+  for (let i = 0; i < 500000; i++) {
+    rk4(s, icbmDt(s));
+    const h = simAlt(s);
+    if (h > apogee) apogee = h;
+    if (s.t - lastSamp >= 8) {                 // sampled path, drawn as the preview
+      lastSamp = s.t;
+      const lla = rToLLA(s.r);
+      pts.push([lla.lat, lla.lon, lla.h]);
+    }
+    if (h <= ground && V3.dot(s.v, V3.unit(s.r)) < 0) {
+      const ll = simLatLon(s);
+      pts.push([ll[0], ll[1], ground]);
+      return { lat: ll[0], lon: ll[1], t: s.t, apogee, impact: V3.norm(s.v), pts,
+               burnoutV: s.burnoutV, burnoutT: s.burnoutT, burnoutAlt: s.burnoutAlt,
+               propLeft: s.propLeft ?? 0, shortfall: s.shortfall ?? 0, log: s.log };
+    }
+    if (s.t > 4*3600) return null;
+    if ((i & 1023) === 0 && performance.now() > wall) return null;
+  }
+  return null;
+}
+
+// The whole pre-launch solution. The guidance flies a drag-free prediction,
+// so the warhead lands a little short of where it aimed: it has to push
+// through the last hundred kilometres of atmosphere on the way down. Rather
+// than model that correction, fly the shot, measure where it actually lands,
+// and move the aim point the other way by the same amount. Two or three
+// passes bring it inside a few hundred metres, which is what a real fire
+// control system does with its own set of correction tables.
+function icbmSolve(padLat, padLon, padElev, target) {
+  const p = readParams();
+  const tGround = terrainAt(target.lat, target.lon) ?? 0;
+  const T = llToR(target.lat, target.lon, tGround);
+  const padR = llToR(padLat, padLon, padElev);
+  const range = surfDist(padLat, padLon, target.lat, target.lon);
+  const first = icbmRequired(padR, T);
+  if (!first) return { error: "That target is almost exactly on the far side "
+    + "of the planet, where the trajectory is undefined. Pick a city a few "
+    + "hundred kilometres to either side." };
+  // velocity to be gained from a standing start on a turning planet, plus a
+  // rule-of-thumb allowance for what gravity and drag take during the climb
+  const dv0 = V3.norm(V3.sub(first.v, V3.cross([0, 0, OMEGA], padR)));
+  // what the vehicle has to deliver: the velocity to be gained from a
+  // standing start on a turning planet, plus a first guess at what gravity
+  // and drag will take during the climb. If the shot then falls short, the
+  // deficit is measured rather than guessed at, and the vehicle is rebuilt.
+  let dvNeed = 1.06*(dv0 + 300 + 0.16*dv0);
+  let veh = null, res = null, aim = T;
+  const trace = [];
+  for (let attempt = 0; attempt < 4; attempt++) {
+    veh = icbmVehicle(p, dvNeed);
+    if (!veh) return { error: "No vehicle of this design reaches that far." };
+    const lead = rToLLA(rotZ(T, OMEGA*first.tof));
+    const brg = bearingDeg(padLat, padLon, lead.lat, lead.lon);
+    aim = T; res = null;
+    // Moving the aim point does not move the impact point one for one: on a
+    // shallow arrival the warhead spends longer in the air and part of the
+    // change is eaten by drag. So the loop measures how far the impact
+    // actually moved for the shift it made, and uses that ratio next time.
+    // On a normal steep arrival the ratio comes out near one and this costs
+    // nothing; on a grazing near-antipodal shot it is what makes it converge.
+    let prevMiss = null, prevStep = null, gain = 1, lastMiss = null;
+    res = null;
+    for (let pass = 0; pass < 8; pass++) {
+      const st = makeState({ ...p, veh, aim }, padLat, padLon, padElev, brg, 0, true);
+      st.coarse = true;
+      const r = icbmFlyOut(st, tGround);
+      if (!r) return { error: "The trajectory solver did not converge." };
+      r.miss = surfDist(target.lat, target.lon, r.lat, r.lon);
+      r.aim = aim;
+      trace.push({ attempt, pass, miss: r.miss, tof: r.t,
+                   burnoutV: r.burnoutV ?? 0, shortfall: r.shortfall ?? 0 });
+      // keep the best pass, never merely the last one: the correction can
+      // overshoot, and there is no reason to hand back a worse answer than
+      // one already in hand
+      if (!res || r.miss < res.miss) res = r;
+      if (r.shortfall) break;          // wrong vehicle: rebuild before aiming
+      if (r.miss < 60 || pass === 7) break;
+      // stop when a pass stops paying for itself: the remaining error is the
+      // step granularity of the integrator, not something aiming can fix
+      if (lastMiss != null && r.miss > 0.85*lastMiss) break;
+      lastMiss = r.miss;
+      if (r.miss > 600000) break;      // the shot itself did not work
+      if (prevMiss != null && prevStep > 1) {
+        if (r.miss < prevMiss) {
+          const g = (prevMiss - r.miss)/prevStep;
+          if (g > 0.25 && g < 2) gain = g;
+        } else gain = Math.min(3, gain*1.7);   // overshot: shorten the stride
+      }
+      const step = Math.min(r.miss/gain, prevStep ? prevStep*1.8 : 900000, 900000);
+      prevMiss = r.miss; prevStep = step;
+      const back = (bearingDeg(target.lat, target.lon, r.lat, r.lon) + 180) % 360;
+      const a = rToLLA(aim);
+      const [lo2, la2] = destPoint(a.lat, a.lon, back, step);
+      aim = llToR(la2, lo2, tGround);
+    }
+    if (!res.shortfall) break;
+    dvNeed += res.shortfall*1.3 + 200;     // it ran out of missile: build more
+  }
+  return { ok: true, veh, aim: res.aim, range, target, tGround, pts: res.pts,
+           tof: res.t, apogee: res.apogee, impact: res.impact, miss: res.miss,
+           burnoutV: res.burnoutV, burnoutT: res.burnoutT, burnoutAlt: res.burnoutAlt,
+           propLeft: res.propLeft, shortfall: res.shortfall, trace,
+           dvIdeal: veh.dvIdeal, cls: missileClass(range), p };
+}
+
 // terrain-ahead prefetching: when low, or after ~2 km of drift, batch-fetch
 // the cells below and ahead along the current velocity
 function terrainMaintenance(s, ll) {
@@ -2020,10 +2626,20 @@ function land(s, ll, ground) {
     `flight time ${ft} &middot; straight-line ${fmtDist(straight)} &middot; ` +
     `track ${fmtDist(s.trackLen)} &middot; impact ${fmtSpeed(impact)}` +
     (s.burstInfo ? `<br>burst at ${fmtAlt(s.burstInfo.alt)} MSL after ${fmtClock(s.burstInfo.t)} (${s.burstInfo.reason})` : "");
+  if (s.p.ptype === "icbm") {
+    icbmImpactReport(s, ll);
+    // every shot picks its target again: the dialogue comes back with the
+    // last city still in the box, so repeating it is one keystroke and
+    // changing it is the default path
+    icbmArmed = false;           // the next silo waits on a fresh confirmation
+    setTimeout(() => { if (simStatus === "landed") icbmOpen(true); }, 900);
+  }
   $("landPanel").style.display = "block";
   setHint("Landed. Left click starts a new launch.");
   window.__landing = { t: s.t, straight, trackLen: s.trackLen, impact,
-    lat: ll[0], lon: ll[1], burst: s.burstInfo };
+    lat: ll[0], lon: ll[1], burst: s.burstInfo,
+    miss: s.p.ptype === "icbm" && icbmSol && icbmSol.target
+      ? surfDist(icbmSol.target.lat, icbmSol.target.lon, ll[0], ll[1]) : null };
 }
 
 function declareFloating(s, why) {
@@ -2044,10 +2660,21 @@ function tick(ts) {
   lastFrame = ts;
   {
     moveCamera(realDt);
+    // everything below sizes or projects against the camera, so the renderer's
+    // derived camera state has to be current before any of it runs
+    globe.syncCamera();
     updateGhost();
     updateAimArrow();
     updateAimUpArrow();
     maybeComputePreview();
+    // Move the object's graphics FIRST, then project them. These two used to
+    // run the other way round, which worked only because the projection was
+    // also using the previous frame's camera: two lags that cancelled. With
+    // the camera now current (syncCamera above), projecting last frame's
+    // object point against this frame's camera makes the dot wobble, and in
+    // chase mode, where the camera sits closer to the object than one frame
+    // of travel, it puts the point behind the camera and the dot vanishes.
+    if (sim && simStatus === "flying") { placeObjectGraphics(sim); drawTrackLive(); }
     // project the object's world point for the DOM label + blue disc
     let ts2 = null;
     if (line3d.tagPoint) {
@@ -2062,7 +2689,6 @@ function tick(ts) {
       dotEl.style.display = "block";
       dotEl.style.left = ts2.x + "px"; dotEl.style.top = ts2.y + "px";
     } else { tag.style.display = "none"; dotEl.style.display = "none"; }
-    if (sim && simStatus === "flying") { placeObjectGraphics(sim); drawTrackLive(); }
     updateFlyHint();
     updatePhasePanel();
     { // camera readout: 4 decimals ~ 11 m, enough to relocate a view
@@ -2077,7 +2703,9 @@ function tick(ts) {
     globe.render();
   }
   if (!sim || !playing || simStatus !== "flying") return;
-  const s = sim, dt = s.p.dt, speed = +$("timeSpeed").value;
+  const s = sim, speed = +$("timeSpeed").value;
+  // the missile changes step size between boost, coast and reentry
+  const dt = s.p.ptype === "icbm" ? icbmDt(s) : s.p.dt;
 
   let ll = simLatLon(s);
   // The terrain hold exists so nothing lands on stale ground. A wavefront
@@ -2205,7 +2833,13 @@ function fmtSpeed(v) {
 // (horizontal component) times a per-preset pixel scale, so a 47 m/s pitch
 // and a 3 m/s balloon drift both draw a readable arrow. The label next to
 // the position dot shows TOTAL speed (3D, including vertical).
-const VEL_SCALE = { balloon: 12, ball: 3 };   // screen px per m/s
+// Screen px per m/s. The length is capped at 200 px, so a scale has to suit
+// the speeds its preset actually reaches or the arrow sits pinned at the cap
+// and stops carrying any information: at 3 px per m/s a missile would be at
+// the cap from 67 m/s onward, and what you would be watching is the arrow
+// holding 200 px on screen while the object recedes, which looks like the
+// arrow growing with time speed when it is really the distance changing.
+const VEL_SCALE = { balloon: 12, ball: 3, icbm: 0.025 };
 // A 3D arrow from an ECEF point along a unit direction: shaft plus four
 // barbs (two per perpendicular axis), so the head reads from any angle
 // rather than vanishing when the camera lines up with one barb plane.
@@ -2274,16 +2908,12 @@ function placeObjectGraphics(s) {
                     brg: (Math.atan2(vE, vN)*180/Math.PI + 360) % 360 };
   renderVelArrow(s, ll, h, ground);
   if (simStatus === "flying") {
-    // drop-line to the terrain below, plus a small cross marking the object
-    // itself at altitude (the DOM dot with the label is the ground shadow)
-    const cs = 7 * globe.mppAt(ll[0], ll[1], h);
-    const [eN] = [destPoint(ll[0], ll[1], 0, cs)], eS = destPoint(ll[0], ll[1], 180, cs),
-          eE = destPoint(ll[0], ll[1], 90, cs), eW = destPoint(ll[0], ll[1], 270, cs);
-    line3d.setLines("drop", [
-      [[ll[0], ll[1], h], [ll[0], ll[1], ground]],
-      [[eN[1], eN[0], h], [eS[1], eS[0], h]],
-      [[eE[1], eE[0], h], [eW[1], eW[0], h]],
-    ], [1, 1, 1, 0.45], 1.5);
+    // just the drop-line to the terrain below. There used to be a small cross
+    // at the object's altitude as well, from before the blue billboard
+    // existed; the billboard sits on the same point and hides it (RW,
+    // 2026-08-18), so it was drawing nothing but overdraw.
+    line3d.setLines("drop", [[[ll[0], ll[1], h], [ll[0], ll[1], ground]]],
+                    [1, 1, 1, 0.45], 1.5);
   }
 }
 
@@ -2359,10 +2989,16 @@ function applyPreset(name) {
   } else if (pr.orbital) {
     $("aimNote").textContent = "Click a ground point and aim a heading: it deploys "
       + "400 km overhead at circular orbital speed. No launch angle.";
+  } else if (pr.targeted) {
+    icbmAimNote();
+    if (!icbmTarget) icbmOpen();     // the target is not optional
   } else if (pr.noAngle) {
     $("aimNote").textContent = "Click the pad location and aim the launch azimuth: "
       + "guidance flies the ascent to orbit. No launch angle.";
   }
+  // no function call here: applyPreset runs at load, before the missile
+  // module's own bindings exist, and touching one of those would throw
+  if (!pr.targeted) { $("icbmDlg").style.display = "none"; $("icbmBar").style.display = "none"; }
   const dm = $("dragModelOut");
   if (dm) dm.textContent = pr.dragModel && pr.dragModel !== "fixed"
     ? pr.dragModel.toUpperCase() + " curve, BC " + pr.bc
@@ -2449,8 +3085,13 @@ function cityGo(lat, lon, label) {
   if (label) $("cityInput").value = label;
   $("cityInput").blur();
 }
-function cityNote(t) { $("cityResults").innerHTML = `<div class="note">${t}</div>`; }
-async function citySearch(q) {
+function cityNote(t, box) { (box || $("cityResults")).innerHTML = `<div class="note">${t}</div>`; }
+// The same search serves the camera box at the top of the screen and the
+// missile's target picker, which is why the results element and what to do
+// with a pick are both arguments.
+async function citySearch(q, box, onPick) {
+  box = box || $("cityResults");
+  onPick = onPick || cityGo;
   if (cityAbort) cityAbort.abort();
   cityAbort = new AbortController();
   let res;
@@ -2458,10 +3099,9 @@ async function citySearch(q) {
     const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=1&q="
       + encodeURIComponent(q), { signal: cityAbort.signal });
     res = await r.json();
-  } catch (e) { if (e.name !== "AbortError") cityNote("search unreachable"); return; }
-  const box = $("cityResults");
+  } catch (e) { if (e.name !== "AbortError") cityNote("search unreachable", box); return; }
   box.innerHTML = "";
-  if (!res.length) return cityNote("no matches");
+  if (!res.length) return cityNote("no matches", box);
   const shown = new Set();   // city + its admin boundary arrive as twins
   for (const p of res) {
     const d = document.createElement("div");
@@ -2477,7 +3117,7 @@ async function citySearch(q) {
     shown.add(label);
     d.textContent = label;
     d.title = p.display_name;
-    d.onclick = () => cityGo(+p.lat, +p.lon, name);
+    d.onclick = () => onPick(+p.lat, +p.lon, name, label);
     box.appendChild(d);
   }
 }
@@ -2499,6 +3139,232 @@ $("cityInput").addEventListener("keydown", e => {
   if (e.code === "Escape") { $("cityResults").innerHTML = ""; $("cityInput").blur(); }
 });
 
+/* ---------- ballistic missile: target dialogue and mission display ---------- */
+// The target city is the one thing this preset cannot do without, so the
+// dialogue opens as soon as the preset is chosen and the launch stays
+// blocked until it is answered. The warhead is optional: it only changes
+// what the map looks like afterwards, and it has a default.
+let icbmTarget = null;          // {lat, lon, name}: committed target
+let icbmPending = null;         // picked in the list, not confirmed yet
+let icbmSol = null;             // the solved mission, or {error}
+let icbmWh = WARHEADS.find(w => w.id === "w87");
+let icbmTgtMarker = null, icbmTimer = null;
+let icbmArmed = false;          // set by "Set target", cleared after a flight
+
+(() => {
+  const sel = $("icbmWarhead");
+  for (const w of WARHEADS) {
+    const o = document.createElement("option");
+    o.value = w.id; o.textContent = w.name;
+    sel.appendChild(o);
+  }
+  sel.value = icbmWh.id;
+})();
+function icbmYieldNote() {
+  const r = blastRadii(icbmWh.kt);
+  $("icbmYieldNote").textContent =
+    `Fireball ${fmtDist(r.fireball)} across the middle, heavy blast out to `
+    + `${fmtDist(r.heavy)}, burns to ${fmtDist(r.burns)}, broken glass to `
+    + `${fmtDist(r.light)}.`;
+}
+$("icbmWarhead").addEventListener("change", () => {
+  icbmWh = WARHEADS.find(w => w.id === $("icbmWarhead").value) || icbmWh;
+  icbmYieldNote();
+  icbmAimNote();
+});
+function icbmOpen(again) {
+  $("icbmDlg").style.display = "block";
+  $("icbmBar").style.display = "none";
+  icbmYieldNote();
+  // reopening after a shot: the last city stays in the box, selected, so
+  // firing at it again is one key and picking a new one is just typing
+  if (again && icbmTarget) {
+    $("icbmTargetOut").textContent = `Last target: ${icbmTarget.name}`;
+    $("icbmOk").disabled = false;
+    icbmPending = icbmTarget;
+    $("icbmCity").value = icbmTarget.name;
+    $("icbmCity").select();
+  }
+  $("icbmCity").focus();
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+// Closing does not throw the dialogue away, it shrinks it to a bar under the
+// city search. The bar is also the honest statement of what the launch will
+// do: until it says "armed", a click on the map does not place a silo.
+function icbmClose() {
+  $("icbmDlg").style.display = "none";
+  const bar = $("icbmBar");
+  bar.style.display = "block";     // never "": the class default is none
+  bar.textContent = icbmArmed
+    ? `Target ${icbmTarget.name} · ${icbmWh.name.split(" (")[0]} · click to change`
+    : icbmTarget
+      ? `Target not confirmed · click to set ${icbmTarget.name} again`
+      : "No target set · click to pick a city";
+}
+function icbmPick(lat, lon, name, label) {
+  icbmPending = { lat, lon, name: name || label };
+  $("icbmResults").innerHTML = "";
+  $("icbmCity").value = label || name;
+  $("icbmTargetOut").textContent = `Target: ${icbmPending.name} `
+    + `(${lat.toFixed(3)}, ${lon.toFixed(3)})`;
+  $("icbmOk").disabled = false;
+  fetchElevBatch([[lat, lon]]);          // the impact needs its ground height
+}
+$("icbmCity").addEventListener("input", () => {
+  clearTimeout(icbmTimer);
+  const q = $("icbmCity").value.trim();
+  if (q.length < 2) { $("icbmResults").innerHTML = ""; return; }
+  icbmTimer = setTimeout(() => citySearch(q, $("icbmResults"), icbmPick), 400);
+});
+$("icbmCity").addEventListener("keydown", e => {
+  e.stopPropagation();
+  if (e.code === "Enter") {
+    const f = $("icbmResults").firstElementChild;
+    if (f && !f.classList.contains("note")) f.onclick();
+    else citySearch($("icbmCity").value.trim(), $("icbmResults"), icbmPick);
+  }
+  if (e.code === "Escape") { $("icbmResults").innerHTML = ""; $("icbmCity").blur(); }
+});
+$("icbmOk").addEventListener("click", () => {
+  if (!icbmPending) return;
+  icbmTarget = icbmPending;
+  icbmSol = null;
+  icbmArmed = true;              // only now does a map click place a silo
+  icbmClose();
+  icbmMarkTarget();
+  icbmAimNote();
+  setHint("Left click sets the silo. The missile finds its own way to "
+          + icbmTarget.name + ".");
+});
+$("icbmCancel").addEventListener("click", icbmClose);
+$("icbmBar").addEventListener("click", () => icbmOpen(!!icbmTarget));
+
+function icbmMarkTarget() {
+  if (icbmTgtMarker) { icbmTgtMarker.remove(); icbmTgtMarker = null; }
+  if (!icbmTarget) return;
+  icbmTgtMarker = mkMarker("padIcon");
+  icbmTgtMarker.el.style.background = "#f6ad55";
+  icbmTgtMarker.setPos(icbmTarget.lat, icbmTarget.lon,
+    (terrainAt(icbmTarget.lat, icbmTarget.lon) ?? 0) + GROUND_LIFT);
+}
+// the note in the control panel: what is set, and what is still missing
+function icbmAimNote() {
+  if (PRESETS[$("preset").value]?.ptype !== "icbm") return;
+  const el = $("aimNote");
+  el.style.display = "";
+  el.innerHTML = (icbmTarget
+      ? `Target ${icbmTarget.name}, ${icbmWh.name.split(",")[0]} warhead. `
+        + `Click the map to place the silo.`
+      : `No target set yet.`)
+    + ` <button class="small" id="icbmEdit" style="margin-top:4px">`
+    + (icbmTarget ? "Change target" : "Pick a target") + "</button>";
+  const a = $("icbmEdit");
+  if (a) a.onclick = e => { e.preventDefault(); icbmOpen(!!icbmTarget); };
+}
+
+// Run the pre-launch solution for a silo at the current pin. It is a few
+// hundred milliseconds of integration, so the hint is painted first.
+function icbmSolveForPad() {
+  icbmSol = { solving: true };
+  line3d.clear("ghost");
+  setHint("Working out the trajectory to " + icbmTarget.name + "...");
+  updateFlyHint();
+  setTimeout(async () => {
+    if (launch.groundElev == null && launchElevPromise) await launchElevPromise;
+    await globe.ensureTerrain([[icbmTarget.lat, icbmTarget.lon]]).catch(() => {});
+    const t0 = performance.now();
+    const sol = icbmSolve(launch.lat, launch.lon, launch.groundElev ?? 0, icbmTarget);
+    sol.solveMs = performance.now() - t0;
+    icbmSol = sol;
+    if (sol.error) { setHint(sol.error); return; }
+    line3d.setLines("ghost", [sol.pts], [1.0, 0.55, 0.35, 0.5], 2.5);
+    icbmMarkTarget();
+    setHint(`${fmtDist(sol.range)} to ${icbmTarget.name}, apogee `
+      + `${fmtAlt(sol.apogee)}, flight time ${fmtClock(sol.tof)}, `
+      + `${Math.round(sol.veh.m0/1000)} t on the pad. Left click launches.`);
+  }, 30);
+}
+
+// Rings on the ground where it lands. Four bands, drawn from the published
+// scaling laws in blastRadii: heavy blast, severe blast, third-degree burns
+// and the outer zone where windows come in.
+function icbmDrawZones(lat, lon) {
+  const r = blastRadii(icbmWh.kt);
+  const order = [["heavy", r.heavy], ["severe", r.severe],
+                 ["burns", r.burns], ["light", r.light]]
+    .sort((a, b) => a[1] - b[1]);
+  const bands = [];
+  let prev = 0;
+  for (const [k, rad] of order) {
+    bands.push({ r0: prev, r1: rad, color: ZONE_COLORS[k] });
+    prev = rad;
+  }
+  globe.setZones("blast", lat, lon, bands);
+}
+// what the bottom panel says while it is flying: where it is in the flight,
+// and which class of missile a shot this long actually takes
+function icbmClassLine(sol) {
+  const c = sol.cls;
+  if (c.name === "no fielded missile")
+    return `${fmtDist(sol.range)} shot: further than any missile ever fielded. `
+      + `At this range the trajectory needs orbital speed, so it takes a launch `
+      + `vehicle (Falcon 9 class) or the retired Soviet R-36-O orbital system.`;
+  return `${fmtDist(sol.range)} shot: ${c.name} class reach (${c.range}), `
+    + `a ${c.kind}.`;
+}
+function icbmPhaseHtml(s, T) {
+  const sol = icbmSol && icbmSol.ok ? icbmSol : null;
+  const foot = sol
+    ? `<br><span style="color:#9fb4c8">${icbmClassLine(sol)} `
+      + `Warhead ${icbmWh.name.split(" (")[0]}.</span>` : "";
+  let head;
+  if (s.phase === "boost") {
+    const st = s.veh.stages[s.stage];
+    const frac = Math.max(0, Math.round(100*s.prop/st.prop));
+    head = s.burning
+      ? `<b>Boost, stage ${s.stage + 1} of ${s.veh.stages.length}</b> &middot; `
+        + `${frac}% of this stage's propellant, ${fmtSpeed(V3.norm(s.v))} at `
+        + `${fmtAlt(simAlt(s))}`
+      : `<b>Staging</b> &middot; stage ${s.stage + 1} is spent and dropping away`;
+    if (s.vgo > 1) head += `, ${fmtSpeed(s.vgo)} still to gain`;
+  } else {
+    const h = simAlt(s), vU = V3.dot(s.v, V3.unit(s.r));
+    const eta = sol ? ` &middot; impact in ${fmtClock(Math.max(0, sol.tof - s.t))}` : "";
+    head = h > 100000
+      ? `<b>Midcourse coast</b> &middot; ${fmtAlt(h)}, `
+        + `${vU > 0 ? "still climbing" : "falling"}, ${fmtSpeed(V3.norm(s.v))}${eta}`
+      : `<b>Reentry</b> &middot; ${fmtAlt(h)}, ${fmtSpeed(V3.norm(s.v))}, `
+        + `${fmtDist(s.trackLen)} flown${eta}`;
+  }
+  return T + head + foot;
+}
+
+function icbmImpactReport(s, ll) {
+  const r = blastRadii(icbmWh.kt);
+  const miss = icbmSol && icbmSol.target
+    ? surfDist(icbmSol.target.lat, icbmSol.target.lon, ll[0], ll[1]) : null;
+  const key = (c, t) => `<div class="zoneKey"><span class="zoneSw" style="background:rgba(`
+    + `${Math.round(c[0]*255)},${Math.round(c[1]*255)},${Math.round(c[2]*255)},`
+    + `${(c[3] + 0.35).toFixed(2)})"></span>${t}</div>`;
+  $("landTitle").textContent = "Impact";
+  $("landStats").innerHTML =
+    `${icbmWh.name} on ${icbmSol?.target?.name ?? "the target"} &middot; `
+    + `flight time ${fmtClock(s.t)} &middot; range ${fmtDist(s.trackLen)} &middot; `
+    + `arriving at ${fmtSpeed(V3.norm(s.v))}`
+    + (miss != null ? ` &middot; ${fmtDist(miss)} from the aim point` : "")
+    + `<div style="margin-top:4px; text-align:left; max-width:520px; margin-left:auto; margin-right:auto">`
+    + key(ZONE_COLORS.heavy, `Heavy blast, 20 psi, to ${fmtDist(r.heavy)}: even `
+        + `reinforced buildings fail. Fireball ${fmtDist(r.fireball)} wide.`)
+    + key(ZONE_COLORS.severe, `Severe blast, 5 psi, to ${fmtDist(r.severe)}: `
+        + `ordinary buildings collapse.`)
+    + key(ZONE_COLORS.burns, `Thermal, to ${fmtDist(r.burns)}: third-degree burns `
+        + `on exposed skin.`)
+    + key(ZONE_COLORS.light, `Light damage, 1 psi, to ${fmtDist(r.light)}: windows `
+        + `blown in, injuries from glass.`)
+    + `</div>`;
+  icbmDrawZones(ll[0], ll[1]);
+}
+
 // introspection hooks for automated verification (pointer lock needs a real
 // user gesture, so tests drive the camera and the launch ladder directly)
 window.__sim = {
@@ -2508,6 +3374,21 @@ window.__sim = {
   get cam() { return cam; }, get line3dOk() { return line3d.ok; },
   globe, terrainAt, isa, windAt, simAlt: () => sim ? simAlt(sim) : null,
   fmtDist, fmtAlt, fmtSpeed, applyPreset, cityGo, citySearch,
+  // ballistic-missile mission hooks: the dialogue needs a real click, so
+  // tests set the target and the warhead directly
+  get icbmSol() { return icbmSol; },
+  get icbmTarget() { return icbmTarget; },
+  blastRadii, missileClass, minEnergyVreq,
+  setTarget: (lat, lon, name) => {          // the confirm button's equivalent
+    icbmTarget = { lat, lon, name: name || "target" };
+    icbmSol = null; icbmArmed = true;
+    icbmMarkTarget(); icbmAimNote();
+    $("icbmDlg").style.display = "none"; $("icbmBar").style.display = "none";
+    return fetchElevBatch([[lat, lon]]);
+  },
+  setWarhead: id => { icbmWh = WARHEADS.find(w => w.id === id) || icbmWh; return icbmWh; },
+  solveIcbm: () => icbmSolve(launch.lat, launch.lon, launch.groundElev ?? 0, icbmTarget),
+  setSolution: sol => { icbmSol = sol; },
   setCam: (la, lo, alt, yaw, pitch) => {
     cam.lat = la; cam.lon = lo; cam.alt = alt; cam.yaw = yaw; cam.pitch = pitch;
   },

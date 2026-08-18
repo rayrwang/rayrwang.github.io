@@ -123,6 +123,41 @@ async function decodeTerrarium(buf) {
 // normalized: a camera that keeps flying west accumulates longitude past
 // -180 (destPoint just adds), and an un-wrapped value here yields negative
 // tile indices, so terrain lookups silently miss and fetches 404
+// A polyline drawn on a globe is a set of straight chords, and a chord passes
+// UNDER the surface it connects: 4 km of ground track dips a metre, which is
+// most of the 1.5 m the app lifts its ground lines by, so the trail sinks
+// into the terrain in the middle of every segment and flickers as the tiles
+// refine around it. Splitting long segments fixes it geometrically (2 km
+// dips 8 cm) at a cost bounded by a budget, since one polyline here can be a
+// 29,000 km ring redrawn every frame.
+function densify(poly) {
+  if (poly.length < 2) return poly;
+  let total = 0;
+  const segLen = [];
+  for (let i = 1; i < poly.length; i++) {
+    const d = Math.hypot((poly[i][0] - poly[i-1][0]) * 111320,
+      (((poly[i][1] - poly[i-1][1] + 540) % 360) - 180) * 111320
+        * Math.cos(poly[i][0] * D2R));
+    segLen.push(d); total += d;
+  }
+  const target = Math.max(2000, total / 6000);
+  if (segLen.every(d => d <= target)) return poly;
+  const out = [poly[0]];
+  for (let i = 1; i < poly.length; i++) {
+    const a = poly[i-1], b = poly[i];
+    const n = Math.min(64, Math.floor(segLen[i-1] / target));
+    // longitude the short way round, so a segment across the date line does
+    // not get subdivided the long way about the planet
+    const dLon = ((b[1] - a[1] + 540) % 360) - 180;
+    for (let j = 1; j <= n; j++) {
+      const t = j / (n + 1);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + dLon * t, a[2] + (b[2] - a[2]) * t]);
+    }
+    out.push(b);
+  }
+  return out;
+}
+
 function lon2tx(lon, z) { return (((lon + 180) % 360 + 360) % 360) / 360 * (1 << z); }
 function lat2ty(lat, z) {
   const la = Math.max(-MAXLAT, Math.min(MAXLAT, lat)) * D2R;
@@ -180,6 +215,31 @@ vec2 svUv(float r, float theta, float phi) {
 }
 `;
 
+// Ground zones (blast rings) are painted by the surface shaders rather than
+// drawn as their own geometry. A separate mesh has to guess where the ground
+// is between its samples, and at standing height a metre of guess is the
+// difference between lying on the ground and floating over your head; tinting
+// the terrain itself cannot miss, because it IS the terrain. Declared above
+// the shaders that paste it in: a chunk referenced before its declaration is
+// a load-time error, which cost a full debugging round on 2026-08-17.
+const ZONE_GLSL = `
+uniform vec3 uZoneC;        // centre of the rings, relative to the camera
+uniform vec4 uZoneR;        // the four band radii in metres; w <= 0 = no rings
+uniform mat4 uZoneCol;      // one rgba column per band, alpha = how strongly
+vec3 zoneTint(vec3 col, vec3 p) {
+  if (uZoneR.w <= 0.0) return col;
+  // straight-line distance, which is the surface distance to a part in a
+  // thousand at these radii, and reads as slant range on anything tall
+  float d = distance(p, uZoneC);
+  vec4 z = vec4(0.0);
+  if (d < uZoneR.x) z = uZoneCol[0];
+  else if (d < uZoneR.y) z = uZoneCol[1];
+  else if (d < uZoneR.z) z = uZoneCol[2];
+  else if (d < uZoneR.w) z = uZoneCol[3];
+  return mix(col, z.rgb, z.a);
+}
+`;
+
 const TILE_VS = `#version 300 es
 precision highp float;
 in vec3 aPos; in vec2 aUV;
@@ -209,6 +269,7 @@ uniform vec3 uUpW; uniform vec3 uAzX; uniform vec3 uAzY; uniform float uCamR;
 uniform sampler2D uSkyV;
 out vec4 frag;
 ${ATMO_GLSL}
+${ZONE_GLSL}
 // mean density along the chord camera->fragment by composite Simpson on
 // the exact geometric heights (5 points, 2 segments); closed-form, no LUT
 vec3 tauChord(vec3 a, vec3 b) {
@@ -227,6 +288,7 @@ vec3 tauChord(vec3 a, vec3 b) {
 }
 void main() {
   vec3 col = uSolid.a > 0.0 ? uSolid.rgb : texture(uTex, vUV).rgb;
+  col = zoneTint(col, vPos);      // before the light and the haze, like paint
   if (uMode == 1) {
     // day/night: dim the daylit raster by sun elevation at the surface
     vec3 sdir = normalize(vPos - uEarthC);
@@ -374,6 +436,7 @@ precision mediump float;
 uniform vec4 uC; out vec4 frag;
 void main() { frag = vec4(uC.rgb * uC.a, uC.a); }`;
 
+
 // buildings: flat-shaded extrusions, lambert on the face normal
 const BLDG_VS = `#version 300 es
 precision highp float;
@@ -399,6 +462,7 @@ uniform vec3 uUpW; uniform vec3 uAzX; uniform vec3 uAzY; uniform float uCamR;
 uniform sampler2D uSkyV;
 out vec4 frag;
 ${ATMO_GLSL}
+${ZONE_GLSL}
 vec3 tauChord(vec3 a, vec3 b) {
   vec3 pts[5];
   pts[0] = a; pts[4] = b;
@@ -415,6 +479,7 @@ vec3 tauChord(vec3 a, vec3 b) {
 void main() {
   float l = 0.62 + 0.38 * max(dot(normalize(vNrm), uSun), 0.0);
   vec3 col = vec3(0.576, 0.631, 0.702) * l;      // #93a1b3, the old look
+  col = zoneTint(col, vPos);       // buildings inside a ring take its colour
   if (uMode == 1) {
     vec3 sdir = normalize(vPos - uEarthC);
     float dim = 0.55 + 0.45 * smoothstep(-0.10, 0.12, dot(sdir, uSun));
@@ -638,7 +703,7 @@ void main() {
 }`;
 
 /* ---------- renderer ---------- */
-const GLOBE_BUILD = "2026-08-18b";
+const GLOBE_BUILD = "2026-08-18g";
 class Globe {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -670,6 +735,7 @@ class Globe {
     this.wantHgtUrgent = new Set();
     this.hgtRev = 0;             // bumped on every terrain-tile arrival
     this.lines = new Map();      // name -> slot
+    this.zone = null;            // ground colour bands (blast rings)
     this.markers = new Set();
     this.frame = 0;
     this.refinePx = REFINE_PX;   // adaptive: coarsens when tile counts blow up
@@ -1485,7 +1551,7 @@ class Globe {
     const vs = [], is = [];
     let vi = 0;
     for (const poly of s.polys) {
-      const loc = poly.map(p => vsub(ecef(p[0], p[1], p[2]), s.anchor));
+      const loc = densify(poly).map(p => vsub(ecef(p[0], p[1], p[2]), s.anchor));
       for (let i = 0; i + 1 < loc.length; i++) {
         const a = loc[i], b = loc[i + 1];
         for (const [side, end] of [[-1, 0], [1, 0], [-1, 1], [1, 1]])
@@ -1517,6 +1583,35 @@ class Globe {
     s.n = is.length;
   }
 
+  // Coloured bands on the ground around a point (blast rings), as
+  // bands = [{r0, r1, color:[r,g,b,a]}] in metres, outermost last. They are
+  // not geometry: the surface shaders tint whatever ground and buildings fall
+  // inside each radius, so the colour lands exactly on the rendered surface at
+  // every height and every angle. Four bands maximum, which is what the shader
+  // carries; the name is kept for symmetry with setLines, and one set is live
+  // at a time.
+  setZones(name, lat, lon, bands) {
+    this.zone = bands && bands.length ? { lat, lon, bands: bands.slice(0, 4) } : null;
+  }
+  clearZones(name) { this.zone = null; }
+  _zoneUniforms(u) {
+    const z = this.zone;
+    if (!z) { if (u.uZoneR) this.gl.uniform4f(u.uZoneR, 0, 0, 0, 0); return; }
+    const c = ecef(z.lat, z.lon, this.terrainAt(z.lat, z.lon) ?? 0);
+    const r = [0, 0, 0, 0], col = new Float32Array(16);
+    for (let i = 0; i < 4; i++) {
+      const b = z.bands[Math.min(i, z.bands.length - 1)];
+      // past the last band the radius stops growing and the alpha is zero,
+      // so the unused slots can never paint anything
+      r[i] = i < z.bands.length ? b.r1 : r[i - 1];
+      const a = i < z.bands.length ? b.color[3] : 0;
+      col.set([b.color[0], b.color[1], b.color[2], a], i*4);
+    }
+    this.gl.uniform3f(u.uZoneC, c[0] - this.camPos[0], c[1] - this.camPos[1],
+                      c[2] - this.camPos[2]);
+    this.gl.uniform4f(u.uZoneR, r[0], r[1], r[2], r[3]);
+    this.gl.uniformMatrix4fv(u.uZoneCol, false, col);
+  }
   addMarker(el, opts = {}) {
     const m = { el, lat: 0, lon: 0, h: 0, anchor: opts.anchor || "center",
       set: false, globe: this };
@@ -1551,6 +1646,15 @@ class Globe {
              y: (0.5 - ny * 0.5) * this.canvas.clientHeight,
              dist: cw, visible: nx > -1.3 && nx < 1.3 && ny > -1.3 && ny < 1.3 };
   }
+  // Bring the derived camera state (position, view-projection, scale) up to
+  // date with the app's camera object without drawing anything. The app sizes
+  // and places its overlays BEFORE calling render, so without this they are
+  // built against the camera as it was on the previous frame. That gap is one
+  // frame of chase-camera movement, which is one frame of object travel, which
+  // is proportional to the time speed: at 1000x the arrow and the cross were
+  // sized from 192 km when the camera was 945 m away, 94 times too big.
+  syncCamera() { this._updateCamera(); }
+
   // meters of world per CSS pixel at a given point (for sizing arrows)
   mppAt(lat, lon, h) {
     const d = vnorm(vsub(ecef(lat, lon, h ?? 0), this.camPos));
@@ -1723,6 +1827,7 @@ class Globe {
       gl.uniform1i(tu.uSkyV, 4);
     }
     gl.uniform1i(tu.uTex, 0);
+    this._zoneUniforms(tu);
     gl.activeTexture(gl.TEXTURE0);
 
     const list = this._traverse();
@@ -2152,6 +2257,7 @@ Globe.prototype._renderBuildings = function (list) {
   gl.uniform1f(u.uFogFar, this.fogFar);
   const useH = this.skyMode === "hillaire" && this.atmoOK && this.sunNow;
   gl.uniform1i(u.uMode, useH ? 1 : 0);
+  this._zoneUniforms(u);
   if (useH) {
     gl.uniform3fv(u.uEarthC,
       [-this.camPos[0], -this.camPos[1], -this.camPos[2]]);
