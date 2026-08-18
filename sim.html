@@ -335,6 +335,7 @@
   <div class="hudrow"><span>Straight dist.</span><span id="hudDist">&ndash;</span></div>
   <div class="hudrow"><span>Track dist.</span><span id="hudTrack">&ndash;</span></div>
   <div class="hudrow"><span>Mach &middot; Cd</span><span id="hudMach">&ndash;</span></div>
+  <div class="hudrow"><span title="the object's clock against a clock at the launch pad: speed slows it (special relativity), altitude speeds it (general relativity)">Proper time</span><span id="hudTau">&ndash;</span></div>
   <!-- the checkbox stayed as the follow state's carrier when its row was
        replaced by the follow button below the panel; F and the button both
        drive it -->
@@ -2209,7 +2210,7 @@ function makeState(p, lat, lon, g0, headingDeg, angleDeg, preview) {
          : p.ptype === "rocket" ? "rocket"
          : p.ptype === "icbm" ? "boost"
          : p.ptype === "sound" ? "sound" : "ball",
-    trackLen: 0, calmSince: null, burstInfo: null,
+    trackLen: 0, calmSince: null, burstInfo: null, dtau: 0, lastTauT: 0,
     lastTrackT: -1, lastTrack3dT: -1, lastTerrainCheckPos: [lat, lon],
   };
   if (p.ptype === "sound") {
@@ -3250,8 +3251,39 @@ function drawSoundRing(s) {
   globe.setLines("soundring", [pts], [0.23, 0.55, 0.99, 0.9], 3);
 }
 
+// Relativistic proper-time rate of the object's clock against a clock at
+// rest on the pad: the special-relativistic term uses INERTIAL speeds
+// (the pad itself moves with the turning planet), the general-relativistic
+// term is the potential difference. Checks: ISS at 400 km comes out about
+// -25 microseconds per day (published ~-25 to -28), and for GPS altitude
+// the sign flips, gravity beating speed.
+function properRate(s) {
+  const vin = V3.add(s.v, V3.cross([0, 0, OMEGA], s.r));
+  const rg = R_EARTH + s.ground0;
+  const vg = OMEGA * rg * Math.cos(s.lat0 * Math.PI/180);
+  const C2 = 8.98755179e16;                       // c squared
+  return (vg*vg - V3.dot(vin, vin)) / (2*C2) + GM/C2 * (1/rg - 1/V3.norm(s.r));
+}
+// "312 ns behind": magnitude with a unit that keeps 3 digits, then which
+// way the object's clock has drifted against the pad's
+function fmtTau(sec) {
+  const a = Math.abs(sec);
+  if (a < 1e-13) return "0 ps";
+  const word = sec < 0 ? " behind" : " ahead";
+  if (a < 1e-9) return (a*1e12).toFixed(a < 1e-11 ? 2 : 1) + " ps" + word;
+  if (a < 1e-6) return (a*1e9).toFixed(2) + " ns" + word;
+  if (a < 1e-3) return (a*1e6).toFixed(2) + " µs" + word;
+  return (a*1e3).toFixed(2) + " ms" + word;
+}
+
 function placeObjectGraphics(s) {
   if (s.phase === "sound") drawSoundRing(s);
+  // accumulate the proper-time offset (rate varies over minutes, so a
+  // per-frame rectangle rule is exact for display purposes)
+  if (s.t > s.lastTauT) {
+    s.dtau += properRate(s) * (s.t - s.lastTauT);
+    s.lastTauT = s.t;
+  }
   const ll = simLatLon(s), h = simAlt(s);
   const ground = terrainAt(ll[0], ll[1]) ?? s.ground0;
   if (objMarker) objMarker.setPos(ll[0], ll[1], ground + GROUND_LIFT);
@@ -3292,6 +3324,7 @@ function updateHud(s, ll, ground, force) {   // text only; positions above
   // state, which for an ICBM read "boost" the whole flight (RW, 2026-08-18)
   const ph = phaseHtml(s).match(/<b>(.*?)<\/b>/);
   if (ph) $("hudPhase").textContent = ph[1];
+  $("hudTau").textContent = s.phase === "sound" ? "–" : fmtTau(s.dtau);
   if (hs > 0.05) $("headingOut").textContent = brg.toFixed(0) + "°";
   $("hudPos").textContent = ll[0].toFixed(4) + ", " + ll[1].toFixed(4);
   $("hudPitch").textContent = (pitch >= 0 ? "+" : "") + pitch.toFixed(1) + "°";
