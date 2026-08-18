@@ -33,6 +33,7 @@ const HGT_CAP = 320;                   // LRU terrain grids
 const MAX_IMG_INFLIGHT = 10;
 const MAX_HGT_INFLIGHT = 6;
 const HGT_RETRY_MS = 1500;    // backoff before refetching a failed tile
+const ATMO_EXP = 24.0;        // HDR->display exposure for the physical sky
 const LOG_FAR = 1e8;                   // log-depth far plane, m
 const MAXLAT = 85.05112877980659;      // web-mercator latitude limit
 
@@ -132,12 +133,59 @@ function tx2lon(x, z) { return x / (1 << z) * 360 - 180; }
 const tkey = (z, x, y) => z + "/" + x + "/" + y;
 
 /* ---------- shaders ---------- */
+const ATMO_GLSL = `
+const float Rg = 6371000.0;
+const float Rt = 6471000.0;
+const vec3  betaR  = vec3(5.802e-6, 13.558e-6, 33.1e-6);
+const float betaMs = 3.996e-6;
+const float betaMe = 4.40e-6 + 3.996e-6;
+const vec3  betaO  = vec3(0.650e-6, 1.881e-6, 0.085e-6);
+float dR(float h) { return exp(-h / 8000.0); }
+float dM(float h) { return exp(-h / 1200.0); }
+float dO(float h) { return max(0.0, 1.0 - abs(h - 25000.0) / 15000.0); }
+vec3 extinct(float h) { return betaR * dR(h) + vec3(betaMe * dM(h)) + betaO * dO(h); }
+float ssqrt(float x) { return sqrt(max(x, 0.0)); }
+float distToTop(float r, float mu) {
+  return max(0.0, -r * mu + ssqrt(r * r * (mu * mu - 1.0) + Rt * Rt));
+}
+float distToGround(float r, float mu) {
+  float disc = r * r * (mu * mu - 1.0) + Rg * Rg;
+  if (disc < 0.0) return -1.0;
+  float d = -r * mu - ssqrt(disc);
+  return d >= 0.0 ? d : -1.0;
+}
+vec2 ttUv(float r, float mu) {
+  r = clamp(r, Rg + 1.0, Rt - 1.0);
+  float H = ssqrt(Rt * Rt - Rg * Rg);
+  float rho = ssqrt(r * r - Rg * Rg);
+  float d = distToTop(r, mu);
+  float dMin = Rt - r, dMax = rho + H;
+  return vec2((d - dMin) / max(1.0, dMax - dMin), rho / H);
+}
+// phase functions
+float phR(float c) { return 3.0 / (16.0 * 3.14159265) * (1.0 + c * c); }
+float phM(float c) {
+  float g = 0.8, g2 = 0.64;
+  return 3.0 / (8.0 * 3.14159265) * (1.0 - g2) * (1.0 + c * c)
+       / ((2.0 + g2) * pow(1.0 + g2 - 2.0 * g * c, 1.5));
+}
+// sky-view LUT warp: sqrt-spaced around the horizon of radius r
+vec2 svUv(float r, float theta, float phi) {
+  float chor = -ssqrt(r * r - Rg * Rg) / r;
+  float hor = acos(clamp(chor, -1.0, 1.0));
+  float v = theta < hor
+    ? 0.5 * (1.0 - sqrt(max(0.0, 1.0 - theta / hor)))
+    : 0.5 + 0.5 * sqrt(max(0.0, (theta - hor) / max(1e-4, 3.14159265 - hor)));
+  return vec2(phi / 6.2831853 + 0.5, v);
+}
+`;
+
 const TILE_VS = `#version 300 es
 precision highp float;
 in vec3 aPos; in vec2 aUV;
 uniform mat4 uVP; uniform vec3 uOrigin; uniform float uLogF;
 uniform vec4 uUVT;            // uv transform: scale, scale, offx, offy
-out vec2 vUV; out float vDist;
+out vec2 vUV; out float vDist; out vec3 vPos;
 void main() {
   vec3 p = aPos + uOrigin;
   vec4 pos = uVP * vec4(p, 1.0);
@@ -145,19 +193,68 @@ void main() {
   ${"pos.z = (log2(max(1e-6, pos.w + 1.0)) * uLogF - 1.0) * pos.w;"}
   gl_Position = pos;
   vUV = aUV * uUVT.xy + uUVT.zw;
+  vPos = p;
 }`;
 
 const TILE_FS = `#version 300 es
-precision mediump float;
-in vec2 vUV; in float vDist;
+precision highp float;   // mediump = fp16 on some GPUs; vPos (~6.4e6 m) and
+                         // uAerMax overflow it, NaN-ing the day/night factor
+in vec2 vUV; in float vDist; in vec3 vPos;
 uniform sampler2D uTex;
 uniform vec4 uSolid;          // a > 0: flat color (polar caps), no texture
 uniform vec3 uFogCol; uniform float uFogNear; uniform float uFogFar;
+uniform int uMode;            // 0 analytic fog, 1 physical aerial perspective
+uniform vec3 uSun; uniform vec3 uEarthC; uniform float uExp;
+uniform vec3 uUpW; uniform vec3 uAzX; uniform vec3 uAzY; uniform float uCamR;
+uniform sampler2D uSkyV;
 out vec4 frag;
+${ATMO_GLSL}
+// mean density along the chord camera->fragment by composite Simpson on
+// the exact geometric heights (5 points, 2 segments); closed-form, no LUT
+vec3 tauChord(vec3 a, vec3 b) {
+  vec3 t = vec3(0.0);
+  vec3 pts[5];
+  pts[0] = a; pts[4] = b;
+  pts[2] = mix(a, b, 0.5); pts[1] = mix(a, b, 0.25); pts[3] = mix(a, b, 0.75);
+  float hR = 0.0, hM = 0.0, hO = 0.0;
+  float wgt[5] = float[5](1.0, 4.0, 2.0, 4.0, 1.0);
+  for (int i = 0; i < 5; i++) {
+    float h = max(0.0, length(pts[i]) - Rg);
+    hR += wgt[i] * dR(h); hM += wgt[i] * dM(h); hO += wgt[i] * dO(h);
+  }
+  float L = distance(a, b) / 12.0;
+  return betaR * (hR * L) + vec3(betaMe * hM * L) + betaO * (hO * L);
+}
 void main() {
   vec3 col = uSolid.a > 0.0 ? uSolid.rgb : texture(uTex, vUV).rgb;
-  float f = smoothstep(uFogNear, uFogFar, vDist);
-  frag = vec4(mix(col, uFogCol, f * 0.92), 1.0);
+  if (uMode == 1) {
+    // day/night: dim the daylit raster by sun elevation at the surface
+    vec3 sdir = normalize(vPos - uEarthC);
+    float dim = 0.55 + 0.45 * smoothstep(-0.10, 0.12, dot(sdir, uSun));
+    col *= dim;
+    // aerial perspective from PROVEN ingredients only (the froxel volume
+    // misrendered on real GPUs): in-scatter color comes from the sky-view
+    // LUT along this pixel's direction (whose below-horizon rows already
+    // hold path-to-ground in-scatter), scaled by how much of the full
+    // path's opacity this fragment's distance covers; opacity itself is a
+    // closed-form Simpson integral of the density profile
+    float dist = length(vPos);
+    vec3 rayd = vPos / dist;
+    float theta = acos(clamp(dot(rayd, uUpW), -1.0, 1.0));
+    float phi = atan(dot(rayd, uAzY), dot(rayd, uAzX));
+    vec4 sv = texture(uSkyV, svUv(uCamR, theta, phi));
+    vec3 Tpart = exp(-tauChord(-uEarthC, vPos - uEarthC));
+    float frac = clamp((1.0 - Tpart.g) / max(1e-4, 1.0 - sv.a), 0.0, 1.0);
+    vec3 inscatter = (vec3(1.0) - exp(-sv.rgb * uExp * 0.26)) * frac;
+    // cartographic compositing: soften physical dimming to match the
+    // reduced-exposure brightening, or bright map albedo develops a dark
+    // mid-oblique saddle (the map is display-space, not radiometric)
+    col = col * (1.0 - (1.0 - Tpart.g) * 0.20) + inscatter;
+  } else {
+    float f = smoothstep(uFogNear, uFogFar, vDist);
+    col = mix(col, uFogCol, f * 0.92);
+  }
+  frag = vec4(col, 1.0);
 }`;
 
 const SKY_VS = `#version 300 es
@@ -212,6 +309,7 @@ precision highp float;
 in vec3 aDir; in float aMag; in float aBv;
 uniform mat4 uVP; uniform float uGmst; uniform float uDist;
 uniform vec3 uEarthC; uniform float uR; uniform float uPxScale;
+uniform float uNight;         // 1 = night sky at ground (physical sky mode)
 out float vA; out vec3 vCol;
 void main() {
   float c = cos(uGmst), s = sin(uGmst);
@@ -224,15 +322,18 @@ void main() {
   bool hit = tca > 0.0 && c2 < uR * uR;
   float h = max(hmin, 0.0);
   float sky = min(1.0, exp(-h / 8500.0) + 0.72 * exp(-h / 1100.0));
-  float vis = hit ? 0.0 : 1.0 - sky;
+  float vis = hit ? 0.0 : max(1.0 - sky, uNight);
   // zero point 3.0: brighter than strict photometry by ~1.5 mag, the usual
   // planetarium compensation for a screen's inability to render scotopic
   // vision; a mag-5 star is one dim pixel, Sirius saturates
   float flux = pow(10.0, -0.4 * (aMag - 3.0));
   vA = min(1.0, flux) * vis;
   gl_PointSize = uPxScale * clamp(3.0 - 0.30 * aMag, 1.5, 6.0);
-  float t = clamp((aBv + 0.4) / 2.0, 0.0, 1.0);
-  vCol = mix(vec3(0.67, 0.76, 1.0), vec3(1.0, 0.80, 0.56), t);
+  // realistic star colors: blue-white through white (solar B-V ~0.65)
+  // to pale orange; nothing in the night sky is actually red
+  float t = clamp((aBv + 0.3) / 1.9, 0.0, 1.0);
+  vCol = t < 0.5 ? mix(vec3(0.64, 0.76, 1.0), vec3(1.0, 0.99, 0.95), t * 2.0)
+                 : mix(vec3(1.0, 0.99, 0.95), vec3(1.0, 0.80, 0.62), t * 2.0 - 1.0);
 }`;
 
 const STAR_FS = `#version 300 es
@@ -278,28 +379,266 @@ const BLDG_VS = `#version 300 es
 precision highp float;
 in vec3 aPos; in vec3 aNrm;
 uniform mat4 uVP; uniform vec3 uOrigin; uniform float uLogF;
-out vec3 vNrm; out float vDist;
+out vec3 vNrm; out float vDist; out vec3 vPos;
 void main() {
-  vec4 pos = uVP * vec4(aPos + uOrigin, 1.0);
+  vec3 p = aPos + uOrigin;
+  vec4 pos = uVP * vec4(p, 1.0);
   vDist = pos.w;
   ${"pos.z = (log2(max(1e-6, pos.w + 1.0)) * uLogF - 1.0) * pos.w;"}
   gl_Position = pos;
   vNrm = aNrm;
+  vPos = p;
 }`;
 
 const BLDG_FS = `#version 300 es
-precision mediump float;
-in vec3 vNrm; in float vDist;
+precision highp float;   // same fp16-overflow hazard as TILE_FS
+in vec3 vNrm; in float vDist; in vec3 vPos;
 uniform vec3 uSun; uniform vec3 uFogCol; uniform float uFogNear; uniform float uFogFar;
+uniform int uMode; uniform vec3 uEarthC; uniform float uExp;
+uniform vec3 uUpW; uniform vec3 uAzX; uniform vec3 uAzY; uniform float uCamR;
+uniform sampler2D uSkyV;
 out vec4 frag;
+${ATMO_GLSL}
+vec3 tauChord(vec3 a, vec3 b) {
+  vec3 pts[5];
+  pts[0] = a; pts[4] = b;
+  pts[2] = mix(a, b, 0.5); pts[1] = mix(a, b, 0.25); pts[3] = mix(a, b, 0.75);
+  float hR = 0.0, hM = 0.0, hO = 0.0;
+  float wgt[5] = float[5](1.0, 4.0, 2.0, 4.0, 1.0);
+  for (int i = 0; i < 5; i++) {
+    float h = max(0.0, length(pts[i]) - Rg);
+    hR += wgt[i] * dR(h); hM += wgt[i] * dM(h); hO += wgt[i] * dO(h);
+  }
+  float L = distance(a, b) / 12.0;
+  return betaR * (hR * L) + vec3(betaMe * hM * L) + betaO * (hO * L);
+}
 void main() {
   float l = 0.62 + 0.38 * max(dot(normalize(vNrm), uSun), 0.0);
   vec3 col = vec3(0.576, 0.631, 0.702) * l;      // #93a1b3, the old look
-  float f = smoothstep(uFogNear, uFogFar, vDist);
-  frag = vec4(mix(col, uFogCol, f * 0.92), 1.0);
+  if (uMode == 1) {
+    vec3 sdir = normalize(vPos - uEarthC);
+    float dim = 0.55 + 0.45 * smoothstep(-0.10, 0.12, dot(sdir, uSun));
+    col *= dim;
+    float dist = length(vPos);
+    vec3 rayd = vPos / dist;
+    float theta = acos(clamp(dot(rayd, uUpW), -1.0, 1.0));
+    float phi = atan(dot(rayd, uAzY), dot(rayd, uAzX));
+    vec4 sv = texture(uSkyV, svUv(uCamR, theta, phi));
+    vec3 Tpart = exp(-tauChord(-uEarthC, vPos - uEarthC));
+    float frac = clamp((1.0 - Tpart.g) / max(1e-4, 1.0 - sv.a), 0.0, 1.0);
+    col = col * (1.0 - (1.0 - Tpart.g) * 0.20)
+        + (vec3(1.0) - exp(-sv.rgb * uExp * 0.26)) * frac;
+  } else {
+    float f = smoothstep(uFogNear, uFogFar, vDist);
+    col = mix(col, uFogCol, f * 0.92);
+  }
+  frag = vec4(col, 1.0);
+}`;
+
+/* ---------- physical sky: Hillaire 2020 ----------
+   Transmittance + multiple-scattering LUTs precomputed once; a small
+   camera-dependent sky-view LUT and a 32x32x16 aerial-perspective froxel
+   volume rebuilt each frame; the screen pass is texture lookups. Rayleigh +
+   Mie (Cornette-Shanks g=0.8) + ozone, real sun from the clock. Falls back
+   to the analytic sky when float render targets are unavailable
+   (globe.skyMode = "analytic" forces the fallback). */
+
+const AQUAD_VS = `#version 300 es
+precision highp float;
+in vec2 aNdc; out vec2 vUV;
+void main() { vUV = aNdc * 0.5 + 0.5; gl_Position = vec4(aNdc, 0.0, 1.0); }`;
+
+const TRANS_FS = `#version 300 es
+precision highp float;
+in vec2 vUV; out vec4 frag;
+${ATMO_GLSL}
+void main() {
+  float H = ssqrt(Rt * Rt - Rg * Rg);
+  float rho = H * vUV.y;
+  float r = ssqrt(rho * rho + Rg * Rg);
+  float dMin = Rt - r, dMax = rho + H;
+  float d = dMin + vUV.x * (dMax - dMin);
+  float mu = d <= 0.0 ? 1.0 : clamp((H * H - rho * rho - d * d) / (2.0 * r * d), -1.0, 1.0);
+  const int N = 44;
+  vec3 tau = vec3(0.0);
+  float dt = d / float(N);
+  for (int i = 0; i < N; i++) {
+    float t = (float(i) + 0.5) * dt;
+    float rs = ssqrt(r * r + t * t + 2.0 * r * mu * t);
+    tau += extinct(rs - Rg) * dt;
+  }
+  frag = vec4(exp(-tau), 1.0);
+}`;
+
+const MULTI_FS = `#version 300 es
+precision highp float;
+in vec2 vUV; out vec4 frag;
+uniform sampler2D uT;
+${ATMO_GLSL}
+void main() {
+  float r = mix(Rg + 10.0, Rt - 10.0, vUV.y);
+  float muS = vUV.x * 2.0 - 1.0;
+  vec3 sun = vec3(ssqrt(1.0 - muS * muS), 0.0, muS);
+  vec3 L2 = vec3(0.0), fms = vec3(0.0);
+  const int ND = 64;
+  for (int i = 0; i < ND; i++) {          // fibonacci sphere directions
+    float fi = (float(i) + 0.5) / float(ND);
+    float ct = 1.0 - 2.0 * fi;
+    float st = ssqrt(1.0 - ct * ct);
+    float ph = 2.399963 * float(i);
+    vec3 d = vec3(st * cos(ph), st * sin(ph), ct);
+    float dg = distToGround(r, d.z);
+    float dEnd = dg > 0.0 ? dg : distToTop(r, d.z);
+    const int NS = 20;
+    float dt = dEnd / float(NS);
+    vec3 T = vec3(1.0);
+    for (int j = 0; j < NS; j++) {
+      float t = (float(j) + 0.5) * dt;
+      float rs = ssqrt(r * r + t * t + 2.0 * r * d.z * t);
+      float hs = rs - Rg;
+      vec3 sc = betaR * dR(hs) + vec3(betaMs * dM(hs));
+      vec3 ex = extinct(hs);
+      float muSs = clamp((r * muS + t * dot(d, sun)) / rs, -1.0, 1.0);
+      vec3 Ts = texture(uT, ttUv(rs, muSs)).rgb;
+      vec3 stepT = exp(-ex * dt);
+      // 2nd-order energy (isotropic phase) and the transfer factor
+      L2  += T * (1.0 - stepT) * sc / max(ex, vec3(1e-9)) * Ts * 0.0795775;
+      fms += T * (1.0 - stepT) * sc / max(ex, vec3(1e-9));
+      T *= stepT;
+    }
+  }
+  L2 /= float(ND); fms /= float(ND);
+  vec3 psi = L2 / max(vec3(1e-5), 1.0 - fms);
+  frag = vec4(psi, 1.0);
+}`;
+
+const SKYVIEW_FS = `#version 300 es
+precision highp float;
+in vec2 vUV; out vec4 frag;
+uniform sampler2D uT; uniform sampler2D uMS;
+uniform float uCamR; uniform vec3 uUp; uniform vec3 uAzX; uniform vec3 uAzY;
+uniform vec3 uSun;
+${ATMO_GLSL}
+void main() {
+  float r0 = uCamR;
+  float chor = -ssqrt(r0 * r0 - Rg * Rg) / r0;
+  float hor = acos(clamp(chor, -1.0, 1.0));
+  float v = vUV.y;
+  float theta = v < 0.5
+    ? hor * (1.0 - pow(1.0 - 2.0 * v, 2.0))
+    : hor + (3.14159265 - hor) * pow(2.0 * v - 1.0, 2.0);
+  float phi = (vUV.x - 0.5) * 6.2831853;
+  vec3 dir = cos(theta) * uUp + sin(theta) * (cos(phi) * uAzX + sin(phi) * uAzY);
+  vec3 pos = uUp * r0;
+  // outside the atmosphere: advance to entry, or output vacuum
+  float r = r0, mu = dot(dir, uUp);
+  if (r > Rt - 1.0) {
+    float dTop = -r * mu - ssqrt(r * r * (mu * mu - 1.0) + Rt * Rt);
+    if (mu >= 0.0 || r * r * (mu * mu - 1.0) + Rt * Rt < 0.0 || dTop < 0.0) {
+      frag = vec4(0.0, 0.0, 0.0, 1.0); return;
+    }
+    pos += dir * (dTop + 10.0);
+  }
+  float rS = length(pos);
+  float muV = dot(normalize(pos), dir);
+  float dg = distToGround(rS, muV);
+  float dEnd = dg > 0.0 ? dg : distToTop(rS, muV);
+  const int NS = 32;
+  float dt = dEnd / float(NS);
+  vec3 L = vec3(0.0), T = vec3(1.0);
+  for (int i = 0; i < NS; i++) {
+    float t = (float(i) + 0.5) * dt;
+    vec3 ps = pos + dir * t;
+    float rs = length(ps);
+    float hs = rs - Rg;
+    vec3 upS = ps / rs;
+    float muSs = clamp(dot(upS, uSun), -1.0, 1.0);
+    float c = dot(dir, uSun);
+    vec3 scR = betaR * dR(hs);
+    vec3 scM = vec3(betaMs * dM(hs));
+    vec3 ex = extinct(hs);
+    // sun below the local horizon self-shadows: the transmittance LUT
+    // integrates through the planet there and returns ~0
+    vec3 Tsun = texture(uT, ttUv(rs, muSs)).rgb;
+    vec3 psi = texture(uMS, vec2(muSs * 0.5 + 0.5, (rs - Rg) / (Rt - Rg))).rgb;
+    vec3 S = (scR * phR(c) + scM * phM(c)) * Tsun + (scR + scM) * psi;
+    vec3 stepT = exp(-ex * dt);
+    L += T * (S - S * stepT) / max(ex, vec3(1e-9));
+    T *= stepT;
+  }
+  frag = vec4(L, T.g);
+}`;
+
+const HSKY_FS = `#version 300 es
+precision highp float;
+in vec2 vNdc; out vec4 frag;
+uniform vec3 uFwd; uniform vec3 uRight; uniform vec3 uUp;
+uniform float uTanHalf; uniform float uAspect;
+uniform vec3 uUpW; uniform vec3 uAzX; uniform vec3 uAzY;
+uniform vec3 uSun; uniform float uCamR; uniform float uExp;
+uniform vec3 uMoon; uniform float uMoonAng; uniform vec3 uMoonZ;
+uniform sampler2D uSkyV; uniform sampler2D uT; uniform sampler2D uMoonTex;
+${ATMO_GLSL}
+void main() {
+  vec3 dir = normalize(uFwd + vNdc.x * uTanHalf * uAspect * uRight
+                            + vNdc.y * uTanHalf * uUp);
+  float theta = acos(clamp(dot(dir, uUpW), -1.0, 1.0));
+  float phi = atan(dot(dir, uAzY), dot(dir, uAzX));
+  vec4 sv = texture(uSkyV, svUv(uCamR, theta, phi));
+  vec3 L = sv.rgb;
+  float muV = dot(dir, uUpW);
+  float hitG = distToGround(uCamR, muV) > 0.0 ? 0.0 : 1.0;
+  // transmittance along the view. A camera above the atmosphere must NOT
+  // inherit the in-air clamp: if the ray misses the shell entirely the sun
+  // and moon are pure white; if it grazes the limb, evaluate from the true
+  // entry point (r*mu + t is invariant along a ray, giving the entry cosine)
+  vec3 Tv;
+  if (uCamR > Rt - 1.0) {
+    float disc = uCamR * uCamR * (muV * muV - 1.0) + Rt * Rt;
+    if (muV >= 0.0 || disc < 0.0) Tv = vec3(1.0);
+    else {
+      float tE = -uCamR * muV - ssqrt(disc);
+      float muE = clamp((uCamR * muV + tE) / Rt, -1.0, 1.0);
+      Tv = texture(uT, ttUv(Rt - 1.0, muE)).rgb;
+    }
+  } else Tv = texture(uT, ttUv(uCamR, muV)).rgb;
+  // sun: limb-darkened disc + circumsolar halo, added in HDR so the noon
+  // disc saturates white through the tonemap and only reddens when the
+  // transmittance does
+  float ang = acos(clamp(dot(dir, uSun), -1.0, 1.0));
+  const float SUNR = 0.004661;                   // 0.267 deg angular radius
+  if (ang < SUNR && hitG > 0.0) {
+    float x = ang / SUNR;
+    float ld = 0.35 + 0.65 * sqrt(max(0.0, 1.0 - x * x));
+    L += Tv * ld * 60.0;
+  }
+  L += hitG * Tv * 0.20 * exp(-pow(ang / (SUNR * 4.0), 1.7));
+  // moon: a grey sphere lit by the actual sun direction, so the phase and
+  // the crescent's orientation are the real ones; earthshine floor keeps
+  // the dark limb faintly visible at night
+  float angM = acos(clamp(dot(dir, uMoon), -1.0, 1.0));
+  if (angM < uMoonAng && hitG > 0.0) {
+    vec3 e1 = normalize(cross(uMoon, abs(uMoon.z) < 0.9 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0)));
+    vec3 e2 = cross(uMoon, e1);
+    float mu_ = dot(dir, e1) / uMoonAng, mv_ = dot(dir, e2) / uMoonAng;
+    float w2 = max(0.0, 1.0 - mu_ * mu_ - mv_ * mv_);
+    vec3 n = normalize(e1 * mu_ + e2 * mv_ - uMoon * sqrt(w2));
+    float lit = max(dot(n, uSun), 0.0) + 0.006;
+    // selenographic mapping: the sub-Earth point is the equirect center
+    // (synchronous rotation; the +-8 deg libration wobble is ignored),
+    // lunar north approximated by the ecliptic pole (1.5 deg off)
+    vec3 mx = -uMoon;
+    vec3 my = cross(uMoonZ, mx);
+    float slon = atan(dot(n, my), dot(n, mx));
+    float slat = asin(clamp(dot(n, uMoonZ), -1.0, 1.0));
+    vec3 alb = texture(uMoonTex, vec2(slon / 6.2831853 + 0.5, 0.5 - slat / 3.14159265)).rgb;
+    L += Tv * lit * alb * 0.85;
+  }
+  frag = vec4(vec3(1.0) - exp(-L * uExp), 1.0);
 }`;
 
 /* ---------- renderer ---------- */
+const GLOBE_BUILD = "2026-08-18b";
 class Globe {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -309,6 +648,8 @@ class Globe {
     if (!gl) throw new Error("WebGL2 unavailable");
     this.gl = gl;
     this.cam = { lat: 0, lon: 0, alt: 1000, yaw: 0, pitch: -30 };
+    this.buildTag = GLOBE_BUILD;
+    console.log("globe.js build", GLOBE_BUILD);
     this.tileUrl = opts.tileUrl ||
       (c => `https://tile.openstreetmap.org/${c.z}/${c.x}/${c.y}.png`);
     // Straight from the AWS open-data bucket, which does send
@@ -375,6 +716,211 @@ class Globe {
     this.pStar = mk(STAR_VS, STAR_FS);
     this.pLine = mk(LINE_VS, LINE_FS);
     this.pBldg = mk(BLDG_VS, BLDG_FS);
+    this._mk = mk;
+  }
+
+  // low-precision solar ephemeris (~0.01 deg) in ECEF, via the same
+  // sidereal rotation the stars use
+  sunDirEcef(ms) {
+    const d = ms / 86400000 - 10957.5;
+    const g = (357.529 + 0.98560028 * d) * D2R;
+    const lam = (280.459 + 0.98564736 * d
+                 + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * D2R;
+    const e = (23.439 - 0.00000036 * d) * D2R;
+    const eq = [Math.cos(lam), Math.cos(e) * Math.sin(lam), Math.sin(e) * Math.sin(lam)];
+    const th = this.gmstRad(ms);
+    return [Math.cos(th) * eq[0] + Math.sin(th) * eq[1],
+            -Math.sin(th) * eq[0] + Math.cos(th) * eq[1], eq[2]];
+  }
+
+  // low-precision lunar ephemeris (~0.3 deg): geocentric ECEF position in
+  // meters plus angular radius; the caller makes it topocentric (at 60
+  // Earth radii, parallax is up to a degree and matters)
+  moonEcef(ms) {
+    const d = ms / 86400000 - 10957.5;
+    const L = (218.316 + 13.176396 * d) * D2R;
+    const M = (134.963 + 13.064993 * d) * D2R;
+    const F = (93.272 + 13.229350 * d) * D2R;
+    const Dm = (297.850 + 12.190749 * d) * D2R;
+    const Ms = (357.529 + 0.985600 * d) * D2R;
+    const lam = L + D2R * (6.289 * Math.sin(M) - 1.274 * Math.sin(M - 2 * Dm)
+      + 0.658 * Math.sin(2 * Dm) - 0.214 * Math.sin(2 * M) - 0.186 * Math.sin(Ms)
+      - 0.114 * Math.sin(2 * F));
+    const bet = D2R * 5.128 * Math.sin(F);
+    const dist = 385001 - 20905 * Math.cos(M) - 3699 * Math.cos(2 * Dm - M)
+      - 2956 * Math.cos(2 * Dm);                       // km
+    const e = (23.439 - 0.00000036 * d) * D2R;
+    const x = Math.cos(bet) * Math.cos(lam);
+    const y = Math.cos(e) * Math.cos(bet) * Math.sin(lam) - Math.sin(e) * Math.sin(bet);
+    const z = Math.sin(e) * Math.cos(bet) * Math.sin(lam) + Math.cos(e) * Math.sin(bet);
+    const th = this.gmstRad(ms);
+    const ex = Math.cos(th) * x + Math.sin(th) * y;
+    const ey = -Math.sin(th) * x + Math.cos(th) * y;
+    const m = dist * 1000;
+    return { pos: [ex * m, ey * m, z * m], ang: Math.asin(1737.4 / dist) };
+  }
+
+  // the five naked-eye planets: J2000 Keplerian elements + century rates
+  // (JPL approximate table), geocentric equatorial unit vectors plus
+  // apparent magnitude (classic Astronomical Almanac phase formulas) and a
+  // B-V-ish tint for the star pipeline, which rotates them by GMST like
+  // any other star
+  planetsEq(ms) {
+    const d = ms / 86400000 - 10957.5, T = d / 36525;
+    const EL = [
+      [0.38709927, 0.20563593, 7.00497902, 252.25032350, 77.45779628, 48.33076593,
+       0.00000037, 0.00001906, -0.00594749, 149472.67411175, 0.16047689, -0.12534081],
+      [0.72333566, 0.00677672, 3.39467605, 181.97909950, 131.60246718, 76.67984255,
+       0.00000390, -0.00004107, -0.00078890, 58517.81538729, 0.00268329, -0.27769418],
+      [1.00000261, 0.01671123, -0.00001531, 100.46457166, 102.93768193, 0.0,
+       0.00000562, -0.00004392, -0.01294668, 35999.37244981, 0.32327364, 0.0],
+      [1.52371034, 0.09339410, 1.84969142, -4.55343205, -23.94362959, 49.55953891,
+       0.00001847, 0.00007882, -0.00813131, 19140.30268499, 0.44441088, -0.29257343],
+      [5.20288700, 0.04838624, 1.30439695, 34.39644051, 14.72847983, 100.47390909,
+       -0.00011607, -0.00013253, -0.00183714, 3034.74612775, 0.21252668, 0.20469106],
+      [9.53667594, 0.05386179, 2.48599187, 49.95424423, 92.59887831, 113.66242448,
+       -0.00125060, -0.00050991, 0.00193609, 1222.49362201, -0.41897216, -0.28867794],
+    ];
+    const helio = i => {
+      const E0 = EL[i];
+      const a = E0[0] + E0[6] * T, ec = E0[1] + E0[7] * T, I = (E0[2] + E0[8] * T) * D2R;
+      const Lg = E0[3] + E0[9] * T, wb = E0[4] + E0[10] * T, Om = E0[5] + E0[11] * T;
+      let M = ((Lg - wb) % 360) * D2R;
+      let E = M;
+      for (let k = 0; k < 6; k++) E -= (E - ec * Math.sin(E) - M) / (1 - ec * Math.cos(E));
+      const xp = a * (Math.cos(E) - ec), yp = a * Math.sqrt(1 - ec * ec) * Math.sin(E);
+      const w = (wb - Om) * D2R, o = Om * D2R;
+      const cw = Math.cos(w), sw = Math.sin(w), co = Math.cos(o), so = Math.sin(o);
+      const ci = Math.cos(I), si = Math.sin(I);
+      return [
+        (cw * co - sw * so * ci) * xp + (-sw * co - cw * so * ci) * yp,
+        (cw * so + sw * co * ci) * xp + (-sw * so + cw * co * ci) * yp,
+        sw * si * xp + cw * si * yp,
+      ];
+    };
+    const eaC = helio(2);
+    const Re = Math.hypot(eaC[0], eaC[1], eaC[2]);
+    const eps = (23.439 - 0.00000036 * d) * D2R;
+    const MAG = [
+      [-0.42, ph => 0.0380 * ph - 0.000273 * ph * ph + 0.000002 * ph ** 3, 0.93],
+      [-4.40, ph => 0.0009 * ph + 0.000239 * ph * ph - 0.00000065 * ph ** 3, 0.82],
+      null,
+      [-1.52, ph => 0.016 * ph, 1.36],
+      [-9.40, ph => 0.005 * ph, 0.83],
+      [-8.88, ph => 0.044 * ph, 1.04],
+    ];
+    const out = [];
+    for (const i of [0, 1, 3, 4, 5]) {
+      const p = helio(i);
+      const g = [p[0] - eaC[0], p[1] - eaC[1], p[2] - eaC[2]];
+      const r = Math.hypot(p[0], p[1], p[2]);
+      const del = Math.hypot(g[0], g[1], g[2]);
+      const cph = Math.min(1, Math.max(-1, (r * r + del * del - Re * Re) / (2 * r * del)));
+      const ph = Math.acos(cph) / D2R;
+      const mag = MAG[i][0] + 5 * Math.log10(r * del) + MAG[i][1](ph);
+      const eq = [g[0] / del,
+        (Math.cos(eps) * g[1] - Math.sin(eps) * g[2]) / del,
+        (Math.sin(eps) * g[1] + Math.cos(eps) * g[2]) / del];
+      out.push({ eq, mag, bv: MAG[i][2] });
+    }
+    return out;
+  }
+
+  _initAtmo() {
+    const gl = this.gl;
+    this.atmoOK = !!gl.getExtension("EXT_color_buffer_float");
+    this.skyMode = this.atmoOK ? "hillaire" : "analytic";
+    if (!this.atmoOK) return;
+    const mk = this._mk;
+    this.pTrans = mk(AQUAD_VS, TRANS_FS);
+    this.pMulti = mk(AQUAD_VS, MULTI_FS);
+    this.pSkyView = mk(AQUAD_VS, SKYVIEW_FS);
+    this.pSkyH = mk(SKY_VS, HSKY_FS);
+    const t2 = (w, h) => {
+      const t = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      return t;
+    };
+    this.tTrans = t2(256, 64);
+    this.tMulti = t2(32, 32);
+    this.tSkyV = t2(192, 108);
+    this.aFbo = gl.createFramebuffer();
+    // the two static LUTs, once
+    this._lutPass(this.pTrans, this.tTrans, 256, 64, () => {});
+    this._lutPass(this.pMulti, this.tMulti, 32, 32, u => {
+      gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this.tTrans);
+      gl.uniform1i(u.uT, 6);
+    });
+  }
+
+  _lutPass(prog, tex, w, h, setU, layer) {
+    const gl = this.gl;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.aFbo);
+    if (layer === undefined)
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+    else
+      gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, tex, 0, layer);
+    gl.viewport(0, 0, w, h);
+    gl.disable(gl.DEPTH_TEST); gl.depthMask(false); gl.disable(gl.BLEND);
+    gl.useProgram(prog.p);
+    setU(prog.u);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.depthMask(true);
+  }
+
+  _buildSkyLUTs() {
+    const gl = this.gl;
+    const P = this.camPos;
+    const camR = Math.hypot(P[0], P[1], P[2]);
+    const up = [P[0] / camR, P[1] / camR, P[2] / camR];
+    const sun = this.sunDirEcef(Date.now());
+    this.sunNow = sun; this.camRNow = camR;
+    const sdu = sun[0] * up[0] + sun[1] * up[1] + sun[2] * up[2];
+    this.sunElevNow = sdu;
+    const mn = this.moonEcef(Date.now());
+    const mvx = mn.pos[0] - P[0], mvy = mn.pos[1] - P[1], mvz = mn.pos[2] - P[2];
+    const md = Math.hypot(mvx, mvy, mvz);
+    const mdir = [mvx / md, mvy / md, mvz / md];
+    // lunar north ~ ecliptic pole, orthogonalized against the sub-Earth axis
+    const th2 = this.gmstRad(Date.now());
+    const eps2 = 23.439 * D2R;
+    const pole = [-Math.sin(th2) * Math.sin(eps2), -Math.cos(th2) * Math.sin(eps2), Math.cos(eps2)];
+    const mX = [-mdir[0], -mdir[1], -mdir[2]];
+    const pd = pole[0] * mX[0] + pole[1] * mX[1] + pole[2] * mX[2];
+    let mZ = [pole[0] - pd * mX[0], pole[1] - pd * mX[1], pole[2] - pd * mX[2]];
+    const zn = Math.hypot(mZ[0], mZ[1], mZ[2]);
+    mZ = [mZ[0] / zn, mZ[1] / zn, mZ[2] / zn];
+    this.moonNow = { dir: mdir, ang: mn.ang, z: mZ };
+    let ax = [sun[0] - sdu * up[0], sun[1] - sdu * up[1], sun[2] - sdu * up[2]];
+    let n = Math.hypot(ax[0], ax[1], ax[2]);
+    if (n < 1e-6) { ax = Math.abs(up[2]) < 0.9 ? [ -up[1], up[0], 0 ] : [0, -up[2], up[1]]; n = Math.hypot(ax[0], ax[1], ax[2]); }
+    ax = [ax[0] / n, ax[1] / n, ax[2] / n];
+    const ay = [up[1] * ax[2] - up[2] * ax[1], up[2] * ax[0] - up[0] * ax[2], up[0] * ax[1] - up[1] * ax[0]];
+    this.svFrame = { up, ax, ay };
+    const common = u => {
+      gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this.tTrans);
+      gl.uniform1i(u.uT, 6);
+      gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, this.tMulti);
+      gl.uniform1i(u.uMS, 7);
+      gl.uniform1f(u.uCamR, camR);
+      gl.uniform3fv(u.uUp, up);
+      gl.uniform3fv(u.uAzX, ax);
+      gl.uniform3fv(u.uAzY, ay);
+      gl.uniform3fv(u.uSun, sun);
+    };
+    this._lutPass(this.pSkyView, this.tSkyV, 192, 108, common);
+    // the froxel volume is gone: terrain aerial now derives from the
+    // sky-view LUT + closed-form opacity in the tile shader (the 3D-texture
+    // path misrendered on real GPUs while passing on SwiftShader)
   }
 
   async _loadStars() {
@@ -417,6 +963,21 @@ class Globe {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
     this.starCount = 0;
     this._loadStars();
+    this._initAtmo();
+    {  // the real face: NASA LROC albedo map, 1024x512 (moon.jpg)
+      const img = new Image();
+      img.onload = () => {
+        const t = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        this.moonTex = t;
+      };
+      img.src = "moon.jpg";
+    }
     // 1x1 fallback texture (paper tone) so a tile can always draw; the
     // magenta twin exists for tests only (OSM's own land colors sit within
     // classifier range of the paper tone, so "paper %" over-counted)
@@ -1033,19 +1594,50 @@ class Globe {
     gl.disable(gl.BLEND);
     gl.disable(gl.CULL_FACE);
 
+    const useH = this.skyMode === "hillaire" && this.atmoOK;
+    if (useH) {
+      this._buildSkyLUTs();
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    }
     // sky first, no depth
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(false);
-    gl.useProgram(this.pSky.p);
-    const u = this.pSky.u;
-    gl.uniform3fv(u.uFwd, this.camFwd);
-    gl.uniform3fv(u.uRight, this.camRight);
-    gl.uniform3fv(u.uUp, this.camUp);
-    gl.uniform1f(u.uTanHalf, this.tanHalf);
-    gl.uniform1f(u.uAspect, this.aspect);
     const C = [-this.camPos[0], -this.camPos[1], -this.camPos[2]];
-    gl.uniform3fv(u.uEarthC, C);
-    gl.uniform1f(u.uR, GLOBE_R);
+    if (useH) {
+      gl.useProgram(this.pSkyH.p);
+      const u = this.pSkyH.u;
+      gl.uniform3fv(u.uFwd, this.camFwd);
+      gl.uniform3fv(u.uRight, this.camRight);
+      gl.uniform3fv(u.uUp, this.camUp);
+      gl.uniform1f(u.uTanHalf, this.tanHalf);
+      gl.uniform1f(u.uAspect, this.aspect);
+      gl.uniform3fv(u.uUpW, this.svFrame.up);
+      gl.uniform3fv(u.uAzX, this.svFrame.ax);
+      gl.uniform3fv(u.uAzY, this.svFrame.ay);
+      gl.uniform3fv(u.uSun, this.sunNow);
+      gl.uniform1f(u.uCamR, this.camRNow);
+      gl.uniform1f(u.uExp, ATMO_EXP);
+      gl.uniform3fv(u.uMoon, this.moonNow.dir);
+      gl.uniform1f(u.uMoonAng, this.moonNow.ang);
+      gl.uniform3fv(u.uMoonZ, this.moonNow.z);
+      gl.activeTexture(gl.TEXTURE3);
+      gl.bindTexture(gl.TEXTURE_2D, this.moonTex || this.paperTex);
+      gl.uniform1i(u.uMoonTex, 3);
+      gl.activeTexture(gl.TEXTURE4); gl.bindTexture(gl.TEXTURE_2D, this.tSkyV);
+      gl.uniform1i(u.uSkyV, 4);
+      gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this.tTrans);
+      gl.uniform1i(u.uT, 6);
+    } else {
+      gl.useProgram(this.pSky.p);
+      const u = this.pSky.u;
+      gl.uniform3fv(u.uFwd, this.camFwd);
+      gl.uniform3fv(u.uRight, this.camRight);
+      gl.uniform3fv(u.uUp, this.camUp);
+      gl.uniform1f(u.uTanHalf, this.tanHalf);
+      gl.uniform1f(u.uAspect, this.aspect);
+      gl.uniform3fv(u.uEarthC, C);
+      gl.uniform1f(u.uR, GLOBE_R);
+    }
     gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuf);
     gl.enableVertexAttribArray(0);
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
@@ -1063,6 +1655,8 @@ class Globe {
       gl.uniform3fv(su.uEarthC, C);
       gl.uniform1f(su.uR, GLOBE_R);
       gl.uniform1f(su.uPxScale, window.devicePixelRatio || 1);
+      gl.uniform1f(su.uNight, useH
+        ? Math.max(0, Math.min(1, (0.02 - this.sunElevNow) / 0.12)) : 0);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.starBuf);
       const L = this.starLoc;
       gl.enableVertexAttribArray(L.dir);
@@ -1072,6 +1666,19 @@ class Globe {
       gl.enableVertexAttribArray(L.bv);
       gl.vertexAttribPointer(L.bv, 1, gl.FLOAT, false, 20, 16);
       gl.drawArrays(gl.POINTS, 0, this.starCount);
+      // the five naked-eye planets ride the same pipeline: equatorial
+      // directions and apparent magnitudes recomputed each frame, streamed
+      // into a tiny second buffer, rotated by the same GMST
+      const pls = this.planetsEq(Date.now());
+      if (!this.planetBuf) this.planetBuf = gl.createBuffer();
+      const pa = new Float32Array(pls.length * 5);
+      pls.forEach((p, i) => pa.set([p.eq[0], p.eq[1], p.eq[2], p.mag, p.bv], i * 5));
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.planetBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, pa, gl.STREAM_DRAW);
+      gl.vertexAttribPointer(L.dir, 3, gl.FLOAT, false, 20, 0);
+      gl.vertexAttribPointer(L.mag, 1, gl.FLOAT, false, 20, 12);
+      gl.vertexAttribPointer(L.bv, 1, gl.FLOAT, false, 20, 16);
+      gl.drawArrays(gl.POINTS, 0, pls.length);
       gl.disableVertexAttribArray(L.dir);
       gl.disableVertexAttribArray(L.mag);
       gl.disableVertexAttribArray(L.bv);
@@ -1094,6 +1701,19 @@ class Globe {
     gl.uniform3fv(tu.uFogCol, fogCol);
     gl.uniform1f(tu.uFogNear, this.fogNear);
     gl.uniform1f(tu.uFogFar, this.fogFar);
+    gl.uniform1i(tu.uMode, useH ? 1 : 0);
+    if (useH) {
+      gl.uniform3fv(tu.uSun, this.sunNow);
+      gl.uniform3fv(tu.uEarthC, C);
+      gl.uniform1f(tu.uExp, ATMO_EXP);
+      gl.uniform3fv(tu.uUpW, this.svFrame.up);
+      gl.uniform3fv(tu.uAzX, this.svFrame.ax);
+      gl.uniform3fv(tu.uAzY, this.svFrame.ay);
+      gl.uniform1f(tu.uCamR, this.camRNow);
+      gl.activeTexture(gl.TEXTURE4);
+      gl.bindTexture(gl.TEXTURE_2D, this.tSkyV);
+      gl.uniform1i(tu.uSkyV, 4);
+    }
     gl.uniform1i(tu.uTex, 0);
     gl.activeTexture(gl.TEXTURE0);
 
@@ -1522,6 +2142,20 @@ Globe.prototype._renderBuildings = function (list) {
   gl.uniform3fv(u.uFogCol, this._fogColNow);
   gl.uniform1f(u.uFogNear, this.fogNear);
   gl.uniform1f(u.uFogFar, this.fogFar);
+  const useH = this.skyMode === "hillaire" && this.atmoOK && this.sunNow;
+  gl.uniform1i(u.uMode, useH ? 1 : 0);
+  if (useH) {
+    gl.uniform3fv(u.uEarthC,
+      [-this.camPos[0], -this.camPos[1], -this.camPos[2]]);
+    gl.uniform1f(u.uExp, ATMO_EXP);
+    gl.uniform3fv(u.uUpW, this.svFrame.up);
+    gl.uniform3fv(u.uAzX, this.svFrame.ax);
+    gl.uniform3fv(u.uAzY, this.svFrame.ay);
+    gl.uniform1f(u.uCamR, this.camRNow);
+    gl.activeTexture(gl.TEXTURE4);
+    gl.bindTexture(gl.TEXTURE_2D, this.tSkyV);
+    gl.uniform1i(u.uSkyV, 4);
+  }
   for (const key of want) {
     const m = B.meshes.get(key);
     if (!m || !m.n) continue;
@@ -1537,7 +2171,7 @@ Globe.prototype._renderBuildings = function (list) {
         continue;
       }
     }
-    gl.uniform3fv(u.uSun, m.sun);
+    gl.uniform3fv(u.uSun, useH ? this.sunNow : m.sun);
     gl.uniform3f(u.uOrigin,
       m.anchor[0] - this.camPos[0],
       m.anchor[1] - this.camPos[1],
