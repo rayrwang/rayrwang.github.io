@@ -450,6 +450,101 @@ void main() {
   frag = vec4(vCol * vA * exp(-2.8 * r2), 1.0);
 }`;
 
+// Lens flare: ONE fullscreen additive pass, entirely procedural, drawn only
+// while the sun is visible. Fullscreen because any sprite-based flare
+// truncates its glow at the sprite boundary (the first version drew a
+// visible square around the sun); here every falloff runs to the frame
+// edge by construction. Components: a hot core with an inverse-square
+// tail, two harmonics of diffraction rays, an internal-reflection ghost
+// chain (hexagonal iris shapes with chromatic rims, spaced along the
+// sun-through-center axis), two iridescent rings, and a whisper of veiling
+// glare. Visibility comes from an occlusion query (a tiny depth-tested
+// proxy at the sun's screen position, so terrain and buildings block the
+// flare) plus an analytic limb test for the planet itself, smoothed over a
+// few frames so it fades rather than pops. All ALU, no textures: far
+// cheaper per pixel than the sky shader that runs every frame anyway.
+const FLARE_FS = `#version 300 es
+precision highp float;
+in vec2 vNdc; out vec4 frag;
+uniform vec2 uSunN;           // sun position in ndc
+uniform float uAspect;
+uniform float uI;             // smoothed visibility x strength
+uniform vec3 uTintG;          // global tint: reddens with a low sun in air
+uniform sampler2D uStar;      // baked |FFT|^2 of the iris aperture
+
+float hexD(vec2 q, float rot) {
+  float c = cos(rot), s = sin(rot);
+  q = abs(mat2(c, -s, s, c) * q);
+  return max(dot(q, vec2(0.8660254, 0.5)), q.y);
+}
+// hexagonal iris ghost: filled, rim-brightened, with the three channels at
+// slightly different scales so the edges fringe like real coatings
+vec3 ghost(vec2 d, float sz, float rot, vec3 tint) {
+  vec3 m;
+  for (int i = 0; i < 3; i++) {
+    float h = hexD(d, rot) / (sz * (0.955 + 0.045 * float(i)));
+    m[i] = smoothstep(1.0, 0.80, h) * (0.38 + 0.85 * smoothstep(0.45, 1.0, h));
+  }
+  return tint * m;
+}
+float ringM(float r, float R, float w) {
+  float x = (r - R) / w; return exp(-x * x);
+}
+void main() {
+  vec2 v = vec2(vNdc.x * uAspect, vNdc.y);
+  vec2 s = vec2(uSunN.x * uAspect, uSunN.y);
+  vec2 d = v - s;
+  float r = length(d);
+  vec3 L = vec3(0.0);
+  // core glow: hot center plus an inverse-square tail
+  L += vec3(1.0, 0.97, 0.90) * (1.1 * exp(-r * 20.0)
+                              + 0.045 / (1.0 + r * r * 350.0));
+  // diffraction starburst: |FFT|^2 of a hexagonal iris, baked once at boot
+  // (the PSF method: the streaks, their fringes and the Airy-like core all
+  // come out of the transform, nothing is drawn by hand). Sampled per
+  // channel at wavelength-scaled radii so the fringes disperse into color;
+  // squaring the tone-compressed texture restores contrast. Rotated a
+  // little with the sun's screen position so panning animates it.
+  float rot = 0.35 * uSunN.x + 0.5236;
+  float c0 = cos(rot), s0 = sin(rot);
+  vec2 dq = mat2(c0, -s0, s0, c0) * d;
+  vec3 stb = vec3(texture(uStar, dq * 0.47 + 0.5).r,
+                  texture(uStar, dq * 0.50 + 0.5).r,
+                  texture(uStar, dq * 0.53 + 0.5).r);
+  L += stb * stb * vec3(1.0, 0.97, 0.90) * 1.5;
+  // ghost chain: positions are fractions of the sun-through-center axis
+  L += 0.080 * ghost(v - s * 0.65, 0.035, 0.3, vec3(0.62, 1.0, 0.72));
+  L += 0.070 * ghost(v - s * 0.38, 0.060, 0.0, vec3(0.55, 0.80, 1.0));
+  L += 0.060 * ghost(v + s * 0.20, 0.085, 0.6, vec3(1.0, 0.85, 0.55));
+  L += 0.075 * ghost(v + s * 0.55, 0.045, 0.2, vec3(0.95, 0.65, 1.0));
+  L += 0.042 * ghost(v + s * 0.92, 0.140, 0.9, vec3(0.60, 0.95, 1.0));
+  // two large iridescent rings on the far side of the axis
+  float r1 = length(v + s * 0.85);
+  L += 0.045 * vec3(ringM(r1, 0.155, 0.012), ringM(r1, 0.165, 0.012),
+                    ringM(r1, 0.176, 0.012));
+  float r2 = length(v + s * 1.60);
+  L += 0.030 * vec3(ringM(r2, 0.300, 0.020), ringM(r2, 0.320, 0.020),
+                    ringM(r2, 0.345, 0.020));
+  // veiling glare: a whisper of lifted black across the whole frame
+  L += vec3(0.010, 0.011, 0.012);
+  frag = vec4(L * uTintG * uI, 1.0);
+}`;
+
+// the occlusion proxy: a tiny quad at the sun's screen position,
+// color-masked, depth-tested at a fixed far log depth, so any opaque
+// geometry in front of the sun makes the query return zero
+const FLAREQ_VS = `#version 300 es
+precision highp float;
+in vec2 aNdc;
+uniform vec2 uC; uniform vec2 uS;
+void main() { gl_Position = vec4(uC + aNdc * uS, 0.0, 1.0); }`;
+
+const FLAREQ_FS = `#version 300 es
+precision highp float;
+uniform float uZ;
+out vec4 frag;
+void main() { gl_FragDepth = uZ; frag = vec4(0.0); }`;
+
 // screen-space expanded polylines (same scheme the MapLibre custom layer
 // used): each segment is a quad, pushed sideways in pixels in the vertex
 // shader; vertices behind the camera collapse the primitive
@@ -733,17 +828,26 @@ void main() {
     }
   } else Tv = texture(uT, ttUv(uCamR, muV)).rgb;
   Tv = mix(Tv, vec3(1.0), uVac);                 // no air, no reddening
-  // sun: limb-darkened disc + circumsolar halo, added in HDR so the noon
-  // disc saturates white through the tonemap and only reddens when the
-  // transmittance does
+  // sun: limb-darkened disc, added in HDR so the noon disc saturates white
+  // through the tonemap and only reddens when the transmittance does. The
+  // surroundings depend on the air along the ray: in air the circumsolar
+  // halo is forward scattering, so it exists exactly as far up as the air
+  // does (95% of the mass sits below 25 km, so the fade is invisible from
+  // the ground and complete at the shell top); with no air on the ray
+  // (camera in space, or vacuum mode at any height) the surrounding is the
+  // camera's own glare, a tight bloom with a long faint tail, so the two
+  // airless cases render the same sun by construction.
   float ang = acos(clamp(dot(dir, uSun), -1.0, 1.0));
   const float SUNR = 0.004661;                   // 0.267 deg angular radius
+  float airF = (1.0 - uVac) * (1.0 - smoothstep(Rg + 25000.0, Rt, uCamR));
   if (ang < SUNR && hitG > 0.0) {
     float x = ang / SUNR;
     float ld = 0.35 + 0.65 * sqrt(max(0.0, 1.0 - x * x));
     L += Tv * ld * 60.0;
   }
-  L += hitG * Tv * 0.20 * exp(-pow(ang / (SUNR * 4.0), 1.7)) * (1.0 - uVac);
+  L += hitG * Tv * 0.20 * exp(-pow(ang / (SUNR * 4.0), 1.7)) * airF;
+  L += hitG * Tv * (1.0 - airF) * (0.15 * exp(-pow(ang / (SUNR * 1.5), 2.0))
+                                 + 0.026 * exp(-ang / (SUNR * 3.0)));
   // moon: a grey sphere lit by the actual sun direction, so the phase and
   // the crescent's orientation are the real ones; earthshine floor keeps
   // the dark limb faintly visible at night
@@ -769,7 +873,7 @@ void main() {
 }`;
 
 /* ---------- renderer ---------- */
-const GLOBE_BUILD = "2026-08-18l";
+const GLOBE_BUILD = "2026-08-18m";
 class Globe {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -864,6 +968,8 @@ class Globe {
     this.pStar = mk(STAR_VS, STAR_FS);
     this.pLine = mk(LINE_VS, LINE_FS);
     this.pBldg = mk(BLDG_VS, BLDG_FS);
+    this.pFlare = mk(SKY_VS, FLARE_FS);      // fullscreen, same triangle
+    this.pFlareQ = mk(FLAREQ_VS, FLAREQ_FS);
     this._mk = mk;
   }
 
@@ -1120,6 +1226,17 @@ class Globe {
     this.skyBuf = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuf);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    // unit quad for the lens-flare occlusion proxy
+    this.quadBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.bufferData(gl.ARRAY_BUFFER,
+      new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    this._flareQ = null;         // occlusion query, reused across frames
+    this._flareQPending = false;
+    this._flareSeen = 0;         // last query verdict (0/1)
+    this._flareVis = 0;          // temporally smoothed visibility
+    this.flare = true;           // master switch (tests can kill it)
+    this._bakeStarburst();
     this.starCount = 0;
     this._loadStars();
     this._initAtmo();
@@ -1900,6 +2017,7 @@ class Globe {
       this._buildSkyLUTs();
       gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     }
+    this._flareCalcNow = this._flareCalc(useH);
     // sky first, no depth
     gl.disable(gl.DEPTH_TEST);
     gl.depthMask(false);
@@ -2070,6 +2188,9 @@ class Globe {
     // buildings
     this._renderBuildings(list);
 
+    // lens-flare occlusion query, while the opaque depth buffer is final
+    this._flareQuery();
+
     // overlay lines: depth-tested against the world, but never writing
     gl.useProgram(this.pLine.p);
     const lu = this.pLine.u;
@@ -2094,9 +2215,180 @@ class Globe {
     gl.bindVertexArray(null);
     gl.depthMask(true);
 
+    // lens flare, additively over everything
+    this._renderFlare();
+
     this._pumpImg();
     this._pumpHgt();
     this._placeMarkers();
+  }
+
+  // Lens-flare support. The starburst is not drawn by hand: it is the
+  // power spectrum of a hexagonal iris aperture (Fraunhofer diffraction:
+  // the far-field PSF is |FFT(aperture)|^2), computed here once at boot
+  // and sampled by the flare shader. The streaks, their fringes and the
+  // Airy-like core all fall out of the transform.
+  _bakeStarburst() {
+    const gl = this.gl, N = 512, R = 92;
+    const re = new Float64Array(N * N), im = new Float64Array(N * N);
+    // hexagonal aperture, antialiased edge (hard edges ring forever)
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const qx = Math.abs(x - N / 2), qy = Math.abs(y - N / 2);
+      const d = Math.max(qx * 0.8660254 + qy * 0.5, qy);
+      re[y * N + x] = Math.max(0, Math.min(1, (R - d) / 1.5));
+    }
+    // iterative radix-2 FFT along one line of a 2D array
+    const fft = (rb, ib, off, stride) => {
+      for (let i = 1, j = 0; i < N; i++) {
+        let bit = N >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) {
+          const a = off + i * stride, b = off + j * stride;
+          let t = rb[a]; rb[a] = rb[b]; rb[b] = t;
+          t = ib[a]; ib[a] = ib[b]; ib[b] = t;
+        }
+      }
+      for (let len = 2; len <= N; len <<= 1) {
+        const ang = -2 * Math.PI / len;
+        const wr = Math.cos(ang), wi = Math.sin(ang);
+        for (let i = 0; i < N; i += len) {
+          let cr = 1, ci = 0;
+          for (let k = 0; k < len / 2; k++) {
+            const a = off + (i + k) * stride;
+            const b = off + (i + k + len / 2) * stride;
+            const xr = rb[b] * cr - ib[b] * ci;
+            const xi = rb[b] * ci + ib[b] * cr;
+            rb[b] = rb[a] - xr; ib[b] = ib[a] - xi;
+            rb[a] += xr; ib[a] += xi;
+            const nr = cr * wr - ci * wi; ci = cr * wi + ci * wr; cr = nr;
+          }
+        }
+      }
+    };
+    for (let y = 0; y < N; y++) fft(re, im, y * N, 1);
+    for (let x = 0; x < N; x++) fft(re, im, x, N);
+    // power spectrum, DC shifted to center, tone-compressed so the streaks
+    // survive next to the core, windowed to zero before the texture edge.
+    // Exposure is set by the brightest pixel OUTSIDE the core, not by the
+    // DC peak: the streaks are ~1e-6 of DC, and a real sensor shows them
+    // because the sun overexposes it by that much; normalizing to DC baked
+    // an invisible starburst (measured: the first bake had no streaks)
+    const tone = new Float32Array(N * N);
+    let mx = 0;
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const i = ((y + N / 2) % N) * N + (x + N / 2) % N;
+      const p = re[i] * re[i] + im[i] * im[i];
+      const rx = (x - N / 2) / (N / 2), ry = (y - N / 2) / (N / 2);
+      const rr = Math.hypot(rx, ry);
+      const win = rr >= 1 ? 0 : rr <= 0.82 ? 1
+        : 1 - ((rr - 0.82) / 0.18) * ((rr - 0.82) / 0.18);
+      const v = Math.pow(p, 0.26) * win;
+      tone[y * N + x] = v;
+      if (rr > 10 / (N / 2) && v > mx) mx = v;
+    }
+    const img = new Uint8Array(N * N);
+    for (let i = 0; i < N * N; i++) img[i] = Math.min(255, tone[i] / mx * 235);
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, N, N, 0, gl.RED, gl.UNSIGNED_BYTE, img);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.starburstTex = t;
+  }
+
+  // _flareCalc decides whether the sun can flare this
+  // frame (in front, on or near screen, not behind the planet's limb) and
+  // how strongly (edge fade; in air a low sun dims the way a camera's flare
+  // does at sunset; airless cases flare at full strength at any elevation).
+  _flareCalc(useH) {
+    if (!this.flare || !useH || !this.sunNow) return null;
+    const s = this.sunNow;
+    const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const f = dot3(s, this.camFwd);
+    if (f <= 0.02) return null;
+    const nx = dot3(s, this.camRight) / (f * this.tanHalf * this.aspect);
+    const ny = dot3(s, this.camUp) / (f * this.tanHalf);
+    if (Math.abs(nx) > 1.35 || Math.abs(ny) > 1.35) return null;
+    // the planet in the way: the sky shader's ground-hit test, CPU-side
+    const mu = dot3(s, this.svFrame.up);
+    const camR = this.camRNow;
+    if (mu < 0 && camR * camR * (mu * mu - 1) + GLOBE_R * GLOBE_R >= 0)
+      return null;
+    const edge = Math.max(Math.abs(nx), Math.abs(ny));
+    const edgeF = Math.max(0, Math.min(1, (1.35 - edge) / 0.35));
+    // same air fade as the sky shader's halo (mass above 25 km is ~5%)
+    const t = Math.max(0, Math.min(1, (camR - (GLOBE_R + 25000)) / 75000));
+    const airF = this.vacuum ? 0 : 1 - t * t * (3 - 2 * t);
+    const elevF = Math.max(0, Math.min(1, (this.sunElevNow + 0.02) / 0.27));
+    // a low sun in air reddens the flare along with everything else
+    const w = airF * (1 - elevF);
+    const tint = [1, 1 - 0.42 * w, 1 - 0.65 * w];
+    return { nx, ny, tint, strength: edgeF * (airF * elevF + (1 - airF)) };
+  }
+
+  _flareQuery() {
+    const gl = this.gl;
+    if (this._flareQPending
+        && gl.getQueryParameter(this._flareQ, gl.QUERY_RESULT_AVAILABLE)) {
+      this._flareSeen = gl.getQueryParameter(this._flareQ, gl.QUERY_RESULT) ? 1 : 0;
+      this._flareQPending = false;
+    }
+    const st = this._flareCalcNow;
+    if (!st) { if (!this._flareQPending) this._flareSeen = 0; return; }
+    if (this._flareQPending) return;
+    if (!this._flareQ) this._flareQ = gl.createQuery();
+    // proxy: a few pixels at the sun's screen position, depth-tested at the
+    // log depth of 10,000 km so any opaque geometry in front wins
+    const zw = (Math.log2(1e7 + 1) * this.logF - 1) * 0.5 + 0.5;
+    gl.colorMask(false, false, false, false);
+    gl.depthMask(false);
+    gl.useProgram(this.pFlareQ.p);
+    const u = this.pFlareQ.u;
+    gl.uniform2f(u.uC, st.nx, st.ny);
+    gl.uniform2f(u.uS, 8 / this.canvas.width, 8 / this.canvas.height);
+    gl.uniform1f(u.uZ, zw);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+    gl.beginQuery(gl.ANY_SAMPLES_PASSED, this._flareQ);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gl.endQuery(gl.ANY_SAMPLES_PASSED);
+    this._flareQPending = true;
+    gl.colorMask(true, true, true, true);
+    gl.depthMask(true);
+  }
+
+  _renderFlare() {
+    const gl = this.gl;
+    const st = this._flareCalcNow;
+    const target = st ? this._flareSeen * st.strength : 0;
+    this._flareVis += (target - this._flareVis) * 0.25;
+    if (!st || this._flareVis < 0.012) return;
+    gl.disable(gl.DEPTH_TEST);
+    gl.depthMask(false);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE);
+    gl.useProgram(this.pFlare.p);
+    const u = this.pFlare.u;
+    gl.uniform2f(u.uSunN, st.nx, st.ny);
+    gl.uniform1f(u.uAspect, this.aspect);
+    gl.uniform1f(u.uI, this._flareVis);
+    gl.uniform3fv(u.uTintG, st.tint);
+    gl.activeTexture(gl.TEXTURE5);
+    gl.bindTexture(gl.TEXTURE_2D, this.starburstTex);
+    gl.uniform1i(u.uStar, 5);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.skyBuf);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
   }
 }
 
