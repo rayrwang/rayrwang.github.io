@@ -21,7 +21,20 @@
   .panel { position:absolute; z-index:10; background:rgba(16,18,22,.92); color:#dde3ea;
            border-radius:10px; padding:10px 12px; font-size:13px; box-shadow:0 2px 12px rgba(0,0,0,.5); }
   #ctl { top:10px; left:10px; width:270px; max-height:calc(100% - 20px); overflow-y:auto; }
-  #hud { top:10px; right:10px; width:215px; }
+  /* the top-right corner is a stack: the flight-data panel (collapsible,
+     starts collapsed on touch) with the follow button under it, so the
+     chase camera stays reachable while the panel is shut */
+  #topRightStack { position:absolute; top:10px; right:10px; z-index:10;
+                   display:flex; flex-direction:column; align-items:flex-end; gap:8px; }
+  #hud { position:static; width:215px; }
+  #followBtn { background:#39424d; }
+  #followBtn.on { background:#2b6cb0; }
+  /* collapsible corner panels: the header row stays as the reopen handle */
+  .panelHead { display:flex; justify-content:space-between; align-items:center;
+               gap:10px; cursor:pointer; user-select:none; }
+  .panelHead .caret { color:#9fb4c8; font-size:11px; }
+  .panel.collapsed > :not(.panelHead) { display:none !important; }
+  #ctl.collapsed, #hud.collapsed { width:auto; min-width:0; }
   /* landing result and the step hint share one bottom stack, so they can
      never sit on top of each other (they used to be independently pinned
      to the same 24px offset, which only worked because the hint hid
@@ -121,14 +134,63 @@
   .zoneKey { display:flex; align-items:flex-start; gap:7px; margin:4px 0 0;
       font-size:11px; line-height:1.35; text-align:left; }
   .zoneSw { width:12px; height:12px; border-radius:50%; flex:0 0 auto; margin-top:2px; }
+  /* --- touch mode (same scheme as rrw.ai/nettlecombe): joystick in the
+     bottom-left corner zone, drag anywhere else to look, hold-buttons bottom
+     right. The ✓/✕ pair stands in for the ladder's left/right click. --- */
+  #glc { touch-action:none; }
+  #touchUI { position:fixed; inset:0; display:none; pointer-events:none; z-index:25; }
+  body.touch #touchUI { display:block; }
+  body.touch #crosshair { display:block; }
+  /* dark chrome, not nettlecombe's translucent white: that page is dark,
+     this map is mostly light, and white-on-light was invisible (measured
+     on the first phone screenshot) */
+  #touchUI button { pointer-events:auto; touch-action:none; width:56px; height:56px;
+      border-radius:50%; padding:0; font:22px/1 system-ui, sans-serif; color:#fff;
+      background:rgba(16,18,22,.55); border:1px solid rgba(255,255,255,.45); }
+  #touchUI button:active { background:rgba(59,130,246,.6); }
+  #stick { position:absolute; width:132px; height:132px; border-radius:50%;
+      border:1px solid rgba(255,255,255,.28); background:rgba(255,255,255,.05);
+      opacity:0; transition:opacity .15s; }
+  #stick i { position:absolute; left:50%; top:50%; width:52px; height:52px;
+      margin:-26px 0 0 -26px; border-radius:50%; background:rgba(255,255,255,.30); }
+  #tbtns { position:absolute; right:16px; bottom:24px; display:flex;
+      flex-direction:column; gap:10px; }
+  /* launch-angle (pitch attitude) buttons, shown only during the angle stage */
+  #tang { position:absolute; right:88px; bottom:24px; display:none;
+      flex-direction:column; gap:10px; }
+  #tang button { font-size:17px; }
+  #tok { color:#7ee2a8; } #tno { color:#f28b82; }
+  /* a phone has no room for the desktop layout: the search moves under the
+     left panel header (centred it covered the follow button), and the
+     bottom stack clears the button columns */
+  body.touch #citySearch { top:54px; left:10px; transform:none; width:210px; }
+  body.touch #icbmBar { top:96px; }
+  body.touch #bottomStack { left:6px; right:150px; }
+  /* the bottom panels are display-only; on touch they must not swallow the
+     joystick zone or look-drags under them */
+  body.touch #bottomStack .panel { pointer-events:none; }
 </style>
 </head>
 <body>
 <canvas id="glc"></canvas>
 <div id="attrib"><a href="/">rrw.ai</a> &middot;
   &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>
-  contributors &middot; terrain Mapzen/AWS &middot; buildings OpenFreeMap &middot; moon NASA LRO</div>
+  contributors &middot; terrain Mapzen/AWS &middot; buildings OpenFreeMap &middot; moon NASA LRO
+  &middot; cities <a href="https://www.geonames.org/">GeoNames</a></div>
 <div id="crosshair"></div>
+<div id="touchUI">
+  <div id="stick"><i></i></div>
+  <div id="tang">
+    <button id="tap" aria-label="launch angle up">+&deg;</button>
+    <button id="tam" aria-label="launch angle down">&minus;&deg;</button>
+  </div>
+  <div id="tbtns">
+    <button id="tok" aria-label="confirm">&#10003;</button>
+    <button id="tno" aria-label="cancel">&#10005;</button>
+    <button id="tup" aria-label="climb">&#9650;</button>
+    <button id="tdn" aria-label="descend">&#9660;</button>
+  </div>
+</div>
 <div id="citySearch">
   <input id="cityInput" type="text" placeholder="Go to city..." autocomplete="off" spellcheck="false">
   <div id="cityResults"></div>
@@ -153,7 +215,7 @@
 </div>
 
 <div id="ctl" class="panel">
-  <h1>Trajectory simulator</h1>
+  <div class="panelHead" id="ctlHead"><h1>Trajectory simulator</h1><span class="caret">&#9662;</span></div>
   <div class="hint" id="stateHint">Click the map, then left click to set the launch point.</div>
 
   <label><span>Preset</span>
@@ -199,11 +261,18 @@
   </div>
 
   <div class="sec">
+    <!-- the simulated wall clock: advances at the time-speed setting,
+         flight or no flight, and drives the sky (sun, moon, planets,
+         stars, day/night). "now" resets it to the real current time. -->
+    <div style="display:flex; gap:6px; align-items:center; justify-content:space-between; margin:0 0 3px">
+      <b id="wallClock" style="font-variant-numeric:tabular-nums">&ndash;</b>
+      <button class="small" id="wallNowBtn" title="reset to the current time">now</button></div>
     <div style="display:flex; align-items:center; gap:8px">
       <button id="playPause">Pause</button>
       <select id="timeSpeed">
-        <option value="0.1">0.1x</option><option value="1" selected>1x</option><option value="10">10x</option>
-        <option value="60">60x</option><option value="300">300x</option><option value="1000">1000x</option>
+        <option value="0.1">0.1x</option><option value="1" selected>1x</option><option value="3">3x</option>
+        <option value="10">10x</option><option value="30">30x</option><option value="100">100x</option>
+        <option value="300">300x</option><option value="1000">1000x</option>
       </select>
       <div id="clock">0:00<small>.0</small></div>
       <span id="pauseFlag" style="display:none; color:#f6ad55; font-size:11px">paused</span>
@@ -238,18 +307,28 @@
   </details>
 </div>
 
+<div id="topRightStack">
 <div id="hud" class="panel">
+  <div class="panelHead" id="hudHead"><b>Flight data</b><span class="caret">&#9662;</span></div>
   <div class="hudrow"><span>Phase</span><b id="hudPhase">idle</b></div>
   <div class="hudrow"><span>Pitch</span><span id="hudPitch">&ndash;</span></div>
   <div class="hudrow"><span>Alt AGL</span><span id="hudAgl">&ndash;</span></div>
   <div class="hudrow"><span>Alt MSL</span><span id="hudMsl">&ndash;</span></div>
   <div class="hudrow"><span>Air speed</span><span id="hudAir">&ndash;</span></div>
   <div class="hudrow"><span>Ground speed</span><span id="hudGnd">&ndash;</span></div>
+  <div class="hudrow"><span>Total speed</span><span id="hudTot">&ndash;</span></div>
   <div class="hudrow"><span>Vert speed</span><span id="hudVs">&ndash;</span></div>
-  <div class="hudrow"><span>From launch</span><span id="hudDist">&ndash;</span></div>
+  <div class="hudrow"><span>Straight dist.</span><span id="hudDist">&ndash;</span></div>
+  <div class="hudrow"><span>Track dist.</span><span id="hudTrack">&ndash;</span></div>
   <div class="hudrow"><span>Mach &middot; Cd</span><span id="hudMach">&ndash;</span></div>
-  <label style="margin-top:5px"><span>Follow object (F to toggle)</span><input id="followToggle" type="checkbox"></label>
+  <!-- the checkbox stayed as the follow state's carrier when its row was
+       replaced by the follow button below the panel; F and the button both
+       drive it -->
+  <input id="followToggle" type="checkbox" style="display:none">
+  <div class="sec"></div>
   <div class="hint" id="camPos" style="margin:4px 0 0"></div>
+</div>
+<button id="followBtn">Follow object</button>
 </div>
 
 <div id="bottomStack">
@@ -284,7 +363,7 @@ const PRESETS = {
     relH: 1.5,         // let go at hand height
     dt: 0.1,           // s; balloon velocity time constant ~0.14 s, RK4 stable well past that
     drag: true,
-    timeSpeed: 1,      // real time by default; crank to 60/300/1000 for the full arc
+    timeSpeed: 1,      // real time by default; crank to 100/300/1000 for the full arc
     bDiam: 28,         // cm; common party balloon inflated size
     bLatex: 2.8,       // g; typical 11-inch latex balloon envelope mass
     bCd: 0.47,         // sphere drag coefficient, subcritical Re
@@ -455,7 +534,7 @@ const PRESETS = {
                        // (the sound-preset stutter law); ~277k cheap RK4
                        // steps per revolution, ~830 steps/frame at 1000x
     drag: true,
-    timeSpeed: 1,      // real time like every preset; arrows to 60x show a
+    timeSpeed: 1,      // real time like every preset; arrows to 100x show a
                        // 92.4-min revolution in ~92 s
     mMass: 4.2e8,      // g: 420 t assembled mass
     mDiam: 40700,      // mm: disc equivalent of ~1,300 m^2 mean cross-section
@@ -1094,6 +1173,12 @@ const camVel = [0, 0, 0];                 // ENU m/s
 const keys = new Set();
 let locked = false, speedMult = 1, camFetchPos = [SPAWN.lat, SPAWN.lon];
 let sprintLatch = false, lastW = 0;
+// touch mode (same scheme as rrw.ai/nettlecombe): a coarse pointer gets the
+// joystick + hold-buttons and never uses pointer lock; taps look, and the
+// on-screen ✓/✕ stand in for the ladder's left/right click
+const isTouch = matchMedia("(pointer: coarse)").matches || "ontouchstart" in window;
+if (isTouch) globe.mobileProfile();   // lighter render load on phone GPUs
+let tFwd = 0, tStrafe = 0, tUp = 0, tAng = 0;    // analog axes, -1..1
 
 const canvas = () => glc;
 function camGround() { return terrainAt(cam.lat, cam.lon) ?? launch.groundElev ?? 0; }
@@ -1166,6 +1251,9 @@ function thrustDir(s, r, v, p) {
 }
 function moveCamera(dt) {
   if ($("followToggle").checked && simStatus === "flying" && sim) { chaseCamera(); return; }
+  // touch attitude buttons: holding +°/−° turns the launch angle at 30 deg/s,
+  // the same knob the scroll wheel and arrow keys drive on the desktop
+  if (tAng && launchStage === "angle") nudgeAngle(tAng * 30 * dt);
   const agl = Math.max(cam.alt - camGround(), 0);
   // Altitude ramp. A fixed power law cannot do what is wanted here, because the
   // complaint is shaped differently at each end: linear near the ground, gentler
@@ -1189,10 +1277,10 @@ function moveCamera(dt) {
   const cp = Math.cos(pitR);
   const fwd = [Math.sin(yawR)*cp, Math.cos(yawR)*cp, Math.sin(pitR)];   // full look vector
   const right = V3.unit([fwd[1], -fwd[0], 0]);                          // horizontal strafe
-  const ax = (keys.has("KeyW")?1:0) - (keys.has("KeyS")?1:0);
-  const ay = (keys.has("KeyD")?1:0) - (keys.has("KeyA")?1:0);
+  const ax = (keys.has("KeyW")?1:0) - (keys.has("KeyS")?1:0) + tFwd;
+  const ay = (keys.has("KeyD")?1:0) - (keys.has("KeyA")?1:0) + tStrafe;
   // Space climbs straight up (nettlecombe scheme), Shift descends; pause is T
-  const az = (keys.has("Space")?1:0) - ((keys.has("ShiftLeft")||keys.has("ShiftRight"))?1:0);
+  const az = (keys.has("Space")?1:0) - ((keys.has("ShiftLeft")||keys.has("ShiftRight"))?1:0) + tUp;
   const wish = V3.add(V3.add(V3.scale(fwd, ax), V3.scale(right, ay)), [0, 0, az]);
   const sprint = sprintLatch || keys.has("AltLeft") || keys.has("AltRight");
   const mag = Math.min(1, V3.norm(wish));
@@ -1333,10 +1421,27 @@ function chaseCamera() {
                        V3.scale(F, Math.sin(f*T)/sT)));
   }
   const e2 = enuAt(C);
-  const ae = V3.dot(A, e2.east), an = V3.dot(A, e2.north), au = V3.dot(A, e2.up);
+  const ae = V3.dot(A, e2.east), an = V3.dot(A, e2.north);
   cam.yaw = (Math.atan2(ae, an)*180/Math.PI + 360) % 360;
-  cam.pitch = Math.max(-89.9, Math.min(89.9,
-    Math.atan2(au, Math.hypot(ae, an))*180/Math.PI));
+  // Golden-horizon pitch (RW, 2026-08-18): the pitch no longer aims at the
+  // object; it holds the HORIZON at the golden section of the frame, earth
+  // the major share (61.8%) below, sky the minor above. The limb dips below
+  // local horizontal by arccos(R/r), so the higher the chase climbs the
+  // further the camera pitches down, and from orbit it looks well down at
+  // the planet. 36.87 deg is the renderer's FOVY; the lift term is where
+  // the golden line sits, in view angle, relative to the frame's centre.
+  // One guard: the object itself must stay comfortably in frame, so the
+  // pitch is clamped to keep it within 7.5 deg of the frame edge (the dot
+  // was nearly walking off the top when pitched well down from space).
+  const dip = Math.acos(Math.min(1, R_EARTH/(R_EARTH + Math.max(0, cam.alt))))*180/Math.PI;
+  const GOLD = (Math.sqrt(5) - 1)/2;               // 0.618, the earth's share
+  const halfFov = 36.87/2*Math.PI/180;
+  const lift = Math.atan((1 - 2*GOLD)*Math.tan(halfFov))*180/Math.PI;
+  const el = Math.atan2(V3.dot(L, e2.up),
+    Math.hypot(V3.dot(L, e2.east), V3.dot(L, e2.north)))*180/Math.PI;
+  const keep = halfFov*180/Math.PI - 7.5;
+  cam.pitch = Math.max(el - keep, Math.min(el + keep,
+    Math.max(-89.9, Math.min(89.9, -dip + lift))));
 }
 
 // where a screen point meets the terrain; null when it points at sky.
@@ -1374,9 +1479,37 @@ function setHint(t) { $("stateHint").textContent = t; }
 let menusHidden = false;
 function toggleMenus() {
   menusHidden = !menusHidden;
-  for (const id of ["ctl", "hud", "bottomStack", "citySearch"])
+  for (const id of ["ctl", "topRightStack", "bottomStack", "citySearch"])
     $(id).style.display = menusHidden ? "none" : "";
 }
+
+// Collapsible corner panels: the header row stays as the reopen handle.
+// Both start collapsed on touch, where they would cover most of a phone,
+// and open on desktop; the follow button under the flight-data panel keeps
+// the chase camera reachable while that panel is shut.
+function bindCollapse(pid, hid, start) {
+  const p = $(pid), head = $(hid);
+  const set = c => {
+    p.classList.toggle("collapsed", c);
+    head.querySelector(".caret").innerHTML = c ? "&#9656;" : "&#9662;";
+  };
+  head.addEventListener("click", () => set(!p.classList.contains("collapsed")));
+  set(start);
+}
+bindCollapse("ctl", "ctlHead", isTouch);
+bindCollapse("hud", "hudHead", isTouch);
+if (!isTouch) $("followBtn").textContent = "Follow object (F to toggle)";
+$("wallNowBtn").addEventListener("click", () => {
+  wallMs = Date.now();
+  // mid-flight the clock is slaved to launchEpoch + sim time: rebase it
+  if (sim && launchEpoch != null) launchEpoch = wallMs - sim.t * 1000;
+  $("timeSpeed").value = "1";   // back to now also means back to real rate
+});
+$("followBtn").addEventListener("click", () => {
+  const t = $("followToggle");
+  t.checked = !t.checked;
+  if (!t.checked) camVel[0] = camVel[1] = camVel[2] = 0;
+});
 
 // The bottom bar follows the click-to-launch pipeline instead of vanishing
 // the moment the pointer is captured. Each stage says what the next click
@@ -1387,7 +1520,7 @@ let lastFlyHint = "";
 function flyHintHtml() {
   const pr = PRESETS[$("preset").value] || {};
   const oneClick = !!pr.aimless && +$("speed").value === 0;   // same test placeLaunch uses
-  if (!locked)
+  if (!locked && !isTouch)
     return "<b>Click the map</b> to fly: mouse looks, <b>W</b> flies where you look "
       + "(<b>A/D</b> strafe, <b>Space</b> climbs, <b>Shift</b> descends, <b>Alt</b> or "
       + "double-tap-W sprints, scroll trims speed). <b>T</b> pauses, <b>arrow left/right</b> "
@@ -1490,8 +1623,10 @@ function phaseHtml(s) {
       + `${fmtClock(period)} period`;
   }
   const vU = V3.dot(s.v, V3.unit(s.r));
+  const bl = simLatLon(s);
+  const bg = terrainAt(bl[0], bl[1]) ?? s.ground0;
   return T + `<b>Ballistic</b> &middot; ${vU > 0 ? "climbing" : "descending"}, `
-    + `${fmtAlt(simAlt(s))} MSL`;
+    + `${fmtAlt(Math.max(0, simAlt(s) - bg))} AGL`;
 }
 function updatePhasePanel() {
   const el = $("phasePanel");
@@ -1502,7 +1637,20 @@ function updatePhasePanel() {
 }
 
 function updateFlyHint() {
-  const h = flyHintHtml();
+  let h = flyHintHtml();
+  // touch has no mouse buttons or keyboard: the same pipeline text, reworded
+  // for the on-screen buttons (✓/✕ = left/right click, +°/−° = the wheel)
+  if (isTouch) h = h
+    .replace(/<b>T<\/b> pauses, <b>arrow left\/right<\/b> (changes|sets) time speed/g,
+             "pause and time speed are in the menu")
+    .replace(/<b>scroll<\/b> or <b>arrow up\/down<\/b> to change it \(shift for fine\)/g,
+             "hold <b>+&deg;/&minus;&deg;</b> to change it")
+    .replace(/<b>Esc<\/b> or a <b>click<\/b>/g, "<b>&#10005;</b>")
+    .replace(/ <b>Esc<\/b> opens the menu\./g,
+             " <b>Joystick</b> bottom left flies, drag anywhere looks, <b>&#9650;/&#9660;</b> climb.")
+    .replace(/ <b>Esc<\/b> returns here\./g, "")
+    .replace(/left click(s)?/gi, "&#10003;")
+    .replace(/right click(s)?/gi, "&#10005;");
   if (h !== lastFlyHint) { lastFlyHint = h; $("flyHint").innerHTML = h; }
 }
 
@@ -1520,7 +1668,7 @@ function updateGhost() {
   // a placement tool: a click there hands the controls back rather than
   // setting a launch point, so the ghost pin should not be following it and
   // implying otherwise. Ticking the box before a flight leaves it alone.
-  if (!locked || launchStage !== "free"
+  if ((!locked && !isTouch) || launchStage !== "free"
       || (simStatus === "flying" && $("followToggle").checked)) { hideGhost(); return; }
   const pt = centerGroundPoint();
   if (!pt) { hideGhost(); return; }
@@ -1718,6 +1866,10 @@ function maybeComputePreview() {
 /* ---------- input ---------- */
 glc.addEventListener("contextmenu", e => e.preventDefault());
 canvas().addEventListener("mousedown", e => {
+  // a tap's synthesized mousedown must not request pointer lock or click the
+  // ladder: on touch those jobs belong to the drag-look and the ✓/✕ buttons.
+  // A real mouse (touchscreen laptop) still works: no touch precedes it.
+  if (performance.now() - lastTouchAt < 1500) return;
   if (!locked) {
     if (e.button === 0) canvas().requestPointerLock();   // swallowed: no ladder
     return;
@@ -1808,6 +1960,75 @@ document.addEventListener("keyup", e => {
 window.addEventListener("blur", () => keys.clear());
 document.addEventListener("visibilitychange", () => { if (document.hidden) keys.clear(); });
 
+/* ---------- touch input (rrw.ai/nettlecombe scheme) ---------- */
+// One pointer starting in the bottom-left corner zone (left half, bottom
+// third) becomes a floating joystick; any other pointer drags the look.
+// The bottom-right column holds ✓ (left click), ✕ (right click), and the
+// climb/descend arrows; +°/−° appear beside them during the angle stage.
+if (isTouch) document.body.classList.add("touch");
+const TOUCH_LOOK = 0.0045 * 180/Math.PI;      // deg per px, nettlecombe's feel
+const STICK_R = 52;
+let stickId = null, stickOx = 0, stickOy = 0;
+let lookId = null, lookX = 0, lookY = 0, lastTouchAt = -1e9;
+addEventListener("pointerdown", e => {
+  if (!isTouch || e.pointerType === "mouse") return;
+  lastTouchAt = performance.now();
+  if (e.target.closest(".panel, #citySearch, #icbmBar, #touchUI, button, input, select, a, #attrib")) return;
+  const inStickZone = e.clientX < innerWidth/2 && e.clientY > innerHeight*2/3;
+  if (inStickZone && stickId === null) {
+    stickId = e.pointerId; stickOx = e.clientX; stickOy = e.clientY;
+    const s = $("stick");
+    s.style.left = (e.clientX - 66) + "px"; s.style.top = (e.clientY - 66) + "px";
+    s.style.opacity = 1;
+  } else if (lookId === null) { lookId = e.pointerId; lookX = e.clientX; lookY = e.clientY; }
+}, { passive: true });
+addEventListener("pointermove", e => {
+  if (!isTouch) return;
+  if (e.pointerId === stickId) {
+    let dx = e.clientX - stickOx, dy = e.clientY - stickOy;
+    const d = Math.hypot(dx, dy);
+    if (d > STICK_R) { dx *= STICK_R/d; dy *= STICK_R/d; }
+    $("stick").firstElementChild.style.transform = `translate(${dx}px,${dy}px)`;
+    const dz = 0.08, norm = v => Math.abs(v) < dz ? 0 : (v - Math.sign(v)*dz)/(1 - dz);
+    tStrafe = norm(dx/STICK_R); tFwd = norm(-dy/STICK_R);
+  } else if (e.pointerId === lookId) {
+    cam.yaw = (cam.yaw + (e.clientX - lookX)*TOUCH_LOOK + 360) % 360;
+    cam.pitch = Math.min(Math.max(cam.pitch - (e.clientY - lookY)*TOUCH_LOOK, -89.9), 89.9);
+    lookX = e.clientX; lookY = e.clientY;
+  }
+}, { passive: true });
+const touchEnd = e => {
+  if (e.pointerId === stickId) {
+    stickId = null; tFwd = tStrafe = 0;
+    $("stick").style.opacity = 0;
+    $("stick").firstElementChild.style.transform = "";
+  }
+  if (e.pointerId === lookId) lookId = null;
+};
+addEventListener("pointerup", touchEnd);
+addEventListener("pointercancel", touchEnd);
+const holdBtn = (id, v, set) => {
+  const b = $(id);
+  b.addEventListener("pointerdown", e => { e.preventDefault(); set(v); });
+  for (const k of ["pointerup", "pointerleave", "pointercancel"])
+    b.addEventListener(k, () => set(0));
+};
+holdBtn("tup",  1, v => tUp = v);
+holdBtn("tdn", -1, v => tUp = v);
+holdBtn("tap",  1, v => tAng = v);
+holdBtn("tam", -1, v => tAng = v);
+// ✓ and ✕ replay the locked mouse buttons, chase release included
+const chaseRelease = () => {
+  if ($("followToggle").checked && simStatus === "flying") {
+    $("followToggle").checked = false;
+    camVel[0] = camVel[1] = camVel[2] = 0;
+    return true;
+  }
+  return false;
+};
+$("tok").addEventListener("pointerdown", e => { e.preventDefault(); if (!chaseRelease()) ladderAdvance(); });
+$("tno").addEventListener("pointerdown", e => { e.preventDefault(); if (!chaseRelease()) ladderBack(); });
+
 /* ---------- simulation core ---------- */
 // State: position r and velocity v as 3-vectors from Earth's center in the
 // rotating Earth-fixed frame (ECEF over a spherical Earth of radius
@@ -1822,20 +2043,48 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) keys.
 // equations remain valid, so a fast preset is a parameters-only addition.
 let sim = null;
 let playing = false, lastFrame = null, stepCarry = 0;
+// The simulated wall clock: a persistent clock that ALWAYS advances at the
+// time-speed setting (crank 1000x with nothing flying and watch night
+// fall). It never resets on its own: the "now" button beside it snaps it
+// back to the real current time. During a flight it is slaved exactly to
+// the physics (its value at ignition + sim time, so a pause freezes it).
+// The renderer's celestial clock (sun, moon, planets, stars, day/night)
+// follows it through globe.simTime.
+let launchEpoch = null, wallMs = Date.now(), lastWallSec = -1, lastWallReal = null;
+function updateWallClock() {
+  // advance on UNCLAMPED real elapsed time, not the physics realDt (which
+  // clamps at 250 ms): a stalled or hidden frame must not starve the
+  // clock, and at 1x the idle clock then tracks real time exactly
+  const nowReal = Date.now();
+  if (sim && simStatus === "flying" && launchEpoch != null)
+    wallMs = launchEpoch + sim.t * 1000;
+  else if (lastWallReal != null)
+    wallMs += (nowReal - lastWallReal) * (+$("timeSpeed").value || 1);
+  lastWallReal = nowReal;
+  globe.simTime = wallMs;
+  const sec = Math.floor(wallMs / 1000);
+  if (sec === lastWallSec) return;
+  lastWallSec = sec;
+  const d = new Date(wallMs);
+  const f = (n) => String(n).padStart(2, "0");
+  $("wallClock").textContent =
+    `${f(d.getHours())}:${f(d.getMinutes())}:${f(d.getSeconds())} local · `
+    + `${f(d.getUTCHours())}:${f(d.getUTCMinutes())}:${f(d.getUTCSeconds())} UTC`;
+}
 let objMarker = null, landMarker = null;
 let trackShadow = null, track3d = null, velArrowState = null;
 
 function clearRun() {
   if (objMarker) { objMarker.remove(); objMarker = null; }
   if (landMarker) { landMarker.remove(); landMarker = null; }
-  globe.clearLines("shadow");
-  line3d.clear("track"); line3d.clear("drop"); line3d.clear("vel");
+  globe.clearLines("shadow"); globe.clearLines("shadowtail");
+  line3d.clear("track"); line3d.clear("tail"); line3d.clear("drop"); line3d.clear("vel");
   line3d.clear("velg"); line3d.clear("ghost"); globe.clearLines("soundring");
   globe.clearZones("blast");
   line3d.tagPoint = null; $("objTag").style.display = "none"; $("objDot").style.display = "none";
   trackShadow = null; track3d = null; velArrowState = null; liveTail = null;
   $("landPanel").style.display = "none";
-  sim = null; playing = false; simStatus = "none"; setPauseUi();
+  sim = null; playing = false; simStatus = "none"; launchEpoch = null; setPauseUi();
   $("clock").innerHTML = "0:00<small>.0</small>";
   $("hudPhase").textContent = "idle";
 }
@@ -1947,6 +2196,7 @@ async function doFire() {
     p.veh = icbmSol.veh; p.aim = icbmSol.aim;
   }
   const s = makeState(p, launch.lat, launch.lon, g0, launch.heading, p.angle, false);
+  launchEpoch = wallMs;         // the flight advances the clock from here
   sim = s; simStatus = "flying";
   playing = true; stepCarry = 0;
   setPauseUi();
@@ -2691,6 +2941,12 @@ function tick(ts) {
     } else { tag.style.display = "none"; dotEl.style.display = "none"; }
     updateFlyHint();
     updatePhasePanel();
+    // the follow button mirrors the checkbox, which is also set from keys
+    // and clicks that fire no change event
+    $("followBtn").classList.toggle("on", $("followToggle").checked);
+    if (isTouch) $("tang").style.display = launchStage === "angle" ? "flex" : "none";
+    maybeRefreshWind();
+    updateWallClock();
     { // camera readout: 4 decimals ~ 11 m, enough to relocate a view
       const cg = terrainAt(cam.lat, cam.lon);
       const t = cam.lat.toFixed(4) + ", " + cam.lon.toFixed(4)
@@ -2789,11 +3045,19 @@ let liveTail = null;
 function drawTrackLive() {
   if (sim && sim.phase === "sound") return;
   if (!track3d || !liveTail) return;
+  // the live segment is its OWN tiny two-point line set: rebuilding the
+  // whole stored track every frame re-specified a large growing buffer
+  // mid-render, which blinked the entire trail on RW's Mesa laptop (whole
+  // trail present one frame, gone the next, both screenshotted); the small
+  // fixed-size sets (drop line, velocity arrow) never blinked, so the
+  // stored track now rebuilds only when a sample lands
   const tip = [liveTail.ll[0], liveTail.ll[1], liveTail.alt];
-  line3d.setLines("track", [track3d.concat([tip])], [0.29, 0.56, 0.85, 0.95], 2.5);
+  line3d.setLines("tail", [[track3d[track3d.length - 1], tip]],
+                  [0.29, 0.56, 0.85, 0.95], 2.5);
   if (trackShadow)                                // the ground shadow too
-    globe.setLines("shadow",
-      [trackShadow.concat([[liveTail.ll[0], liveTail.ll[1], shadowH(liveTail.ll[0], liveTail.ll[1])]])],
+    globe.setLines("shadowtail",
+      [[trackShadow[trackShadow.length - 1],
+        [liveTail.ll[0], liveTail.ll[1], shadowH(liveTail.ll[0], liveTail.ll[1])]]],
       [0.19, 0.44, 0.75, 0.75], 2.5);
 }
 
@@ -2931,15 +3195,17 @@ function updateHud(s, ll, ground, force) {   // text only; positions above
   const total = Math.hypot(hs, vU);
   const pitch = Math.atan2(vU, hs) * 180/Math.PI;
   const brg = (Math.atan2(vE, vN)*180/Math.PI + 360) % 360;
-  $("objTag").textContent = `${fmtAlt(h)} MSL · ${fmtSpeed(total)}`;
+  $("objTag").textContent = `${fmtAlt(Math.max(0, h - ground))} AGL · ${fmtSpeed(total)}`;
   if (hs > 0.05) $("headingOut").textContent = brg.toFixed(0) + "°";
   $("hudPitch").textContent = (pitch >= 0 ? "+" : "") + pitch.toFixed(1) + "°";
   $("hudAgl").textContent = fmtAlt(h - ground);
   $("hudMsl").textContent = fmtAlt(h);
   $("hudAir").textContent = fmtSpeed(air);
   $("hudGnd").textContent = fmtSpeed(hs);
+  $("hudTot").textContent = fmtSpeed(total);
   $("hudVs").textContent = (vU >= 0 ? "+" : "") + fmtSpeed(vU);
   $("hudDist").textContent = fmtDist(surfDist(s.lat0, s.lon0, ll[0], ll[1]));
+  $("hudTrack").textContent = fmtDist(s.trackLen);
   // Mach and the live drag coefficient: on a G1/G7 preset you can watch Cd
   // climb through the transonic peak and fall away again as it slows
   const mach = air / SOUND(atmAt(h).T);
@@ -3056,6 +3322,26 @@ $("windCurrent").addEventListener("change", () => {
 $("fetchWind").addEventListener("click", () =>
   loadWind(launch.lat ?? cam.lat, launch.lon ?? cam.lon));
 
+// Wind follows the camera: teleporting or flying to another city used to
+// leave the whole panel describing the place you left, until a launch there
+// forced a refetch. Probes the staleness rule (20 km or an hour, in
+// windProfileStale) a few times a minute, never during a flight, since
+// swapping the airmass under an active flight changes its physics; a failed
+// fetch backs off a minute so a dead API is not hammered.
+let windAutoBusy = false, windAutoAt = 0;
+function maybeRefreshWind() {
+  if (windAutoBusy || !$("windCurrent").checked) return;
+  if (sim && simStatus === "flying") return;
+  const now = performance.now();
+  if (now - windAutoAt < 5000) return;
+  if (!windProfileStale(cam.lat, cam.lon)) return;
+  windAutoAt = now; windAutoBusy = true;
+  loadWind(cam.lat, cam.lon).finally(() => {
+    windAutoBusy = false;
+    if (windProfileStale(cam.lat, cam.lon)) windAutoAt = performance.now() + 55000;
+  });
+}
+
 applyPreset("pistol");
 fetchElevBatch([[SPAWN.lat, SPAWN.lon]]);   // warm the cache for the spawn area
 loadWind(SPAWN.lat, SPAWN.lon);             // current wind by default
@@ -3069,6 +3355,131 @@ requestAnimationFrame(tick);
 // loads after arrival, so the altitude re-seats once the tile lands, unless
 // the user has already flown more than 2 km away.
 let cityAbort = null, cityTimer = null;
+
+// Cached city list: the 5,000 most populous cities (GeoNames-derived,
+// population-sorted, name/country/coords), fetched once. Both search boxes
+// answer from it INSTANTLY, ranked by population because the file is; the
+// debounced Nominatim query then fills in everything the cache cannot know
+// (small towns, addresses), deduped against the local rows.
+let CITY_DB = null, CITY_KEYS = null, COUNTRY_DB = null, COUNTRY_KEYS = null;
+const cityFold = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+fetch("cities.json").then(r => r.ok ? r.json() : null).then(j => {
+  if (!j) return;
+  CITY_DB = j.cities;
+  CITY_KEYS = CITY_DB.map(c => cityFold(c[0]));
+  COUNTRY_DB = j.countries || [];
+  COUNTRY_KEYS = COUNTRY_DB.map(c => cityFold(c[0]));
+}).catch(() => {});
+// is edit distance <= k (small k, early row-min exit). Transpositions count
+// as ONE edit (optimal string alignment), because swapped letters are the
+// commonest city typo: "dehli" must reach Delhi inside a 1-edit budget.
+function editLe(a, b, k) {
+  if (Math.abs(a.length - b.length) > k) return false;
+  let p2 = null, prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      let v = Math.min(prev[j] + 1, cur[j - 1] + 1,
+                       prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1])
+        v = Math.min(v, p2[j - 2] + 1);
+      cur[j] = v;
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > k) return false;
+    p2 = prev; prev = cur;
+  }
+  return prev[b.length] <= k;
+}
+// Literal matches (name prefix OR any-word prefix) in one scan, which IS
+// population-descending order because the file is sorted that way: "york"
+// finds New York City before York. Fuzzy (edit distance 1 from 4 letters,
+// 2 from 8) only fills the remaining slots, so "tokio" and "sao paolo"
+// still land on the right row without a typo ever outranking a real prefix.
+function localCities(q, n = 5) {
+  if (!CITY_DB) return [];
+  const s = cityFold(q);
+  const idx = [], seen = new Set();
+  for (let i = 0; i < CITY_KEYS.length && idx.length < n; i++) {
+    const k = CITY_KEYS[i];
+    if (k.startsWith(s) || k.includes(" " + s)) { idx.push(i); seen.add(i); }
+  }
+  if (idx.length < n) {
+    const tol = s.length >= 8 ? 2 : s.length >= 4 ? 1 : 0;
+    if (tol) for (let i = 0; i < CITY_KEYS.length && idx.length < n; i++) {
+      if (seen.has(i)) continue;
+      const k = CITY_KEYS[i];
+      // against the whole name AND its prefix ("new dehli" -> New Delhi),
+      // then against each word ("dehli" alone still reaches Delhi)
+      if (editLe(s, k.slice(0, s.length), tol) || editLe(s, k, tol)
+          || k.split(" ").some(w =>
+              editLe(s, w.slice(0, s.length), tol) || editLe(s, w, tol)))
+        idx.push(i);
+    }
+  }
+  return idx.map(i => { const c = CITY_DB[i];
+    return { idx: i, lat: c[2], lon: c[3], name: c[0], label: c[0] + ", " + c[1] }; });
+}
+// A country match expands to that country's most populous cities in
+// descending order (the scan order); a country with no city in the top
+// 5,000 (Iceland) falls back to its capital row from the countries table.
+// At most two countries share the list ("united" shows both US and UK).
+function countryRows(q, n, allowFuzzy) {
+  if (!COUNTRY_DB) return [];
+  const s = cityFold(q);
+  let hits = [];
+  for (let i = 0; i < COUNTRY_KEYS.length; i++)
+    if (COUNTRY_KEYS[i].startsWith(s)) hits.push(i);
+  if (!hits.length && allowFuzzy) {
+    const tol = s.length >= 8 ? 2 : s.length >= 4 ? 1 : 0;
+    if (tol) for (let i = 0; i < COUNTRY_KEYS.length; i++)
+      if (editLe(s, COUNTRY_KEYS[i].slice(0, s.length), tol) || editLe(s, COUNTRY_KEYS[i], tol))
+        hits.push(i);
+  }
+  hits = hits.slice(0, 2);
+  const per = hits.length > 1 ? Math.max(1, Math.floor(n / hits.length)) : n;
+  const out = [];
+  for (const h of hits) {
+    const [cname, capital, la, lo] = COUNTRY_DB[h];
+    let got = 0;
+    for (let i = 0; i < CITY_DB.length && got < per; i++) {
+      if (CITY_DB[i][1] !== cname) continue;
+      const c = CITY_DB[i];
+      out.push({ idx: i, lat: c[2], lon: c[3], name: c[0], label: c[0] + ", " + c[1] });
+      got++;
+    }
+    if (!got) out.push({ idx: 1e9, lat: la, lon: lo, name: capital,
+                         label: capital + ", " + cname });
+  }
+  return out;
+}
+// What a query means: a strong city match (top ~300, roughly a million
+// people) wins outright; otherwise a matching country's cities lead and
+// the weak city matches trail. Fuzzy country matching only runs when no
+// city matched at all, so a typo'd city never turns into a country.
+function localResults(q, n = 5) {
+  const cities = localCities(q, n);
+  if (cities.length && cities[0].idx <= 300) return cities;
+  const cs = countryRows(q, n, cities.length === 0);
+  if (!cs.length) return cities;
+  const seen = new Set(cs.map(r => r.idx));
+  return cs.concat(cities.filter(r => !seen.has(r.idx))).slice(0, n);
+}
+function cityRow(box, r, onPick) {
+  const d = document.createElement("div");
+  d.textContent = r.label;
+  if (r.title) d.title = r.title;
+  d.onclick = () => onPick(r.lat, r.lon, r.name, r.label);
+  box.appendChild(d);
+}
+function showLocalCities(q, box, onPick) {
+  const loc = localResults(q);
+  if (!loc.length) return;
+  box.innerHTML = "";
+  for (const r of loc) cityRow(box, r, onPick);
+}
+
 function cityGo(lat, lon, label) {
   cam.lat = lat; cam.lon = lon;
   cam.alt = (globe.terrainAt(lat, lon) ?? 0) + 700;
@@ -3094,14 +3505,22 @@ async function citySearch(q, box, onPick) {
   onPick = onPick || cityGo;
   if (cityAbort) cityAbort.abort();
   cityAbort = new AbortController();
+  const loc = localResults(q);
   let res;
   try {
     const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=1&q="
       + encodeURIComponent(q), { signal: cityAbort.signal });
     res = await r.json();
-  } catch (e) { if (e.name !== "AbortError") cityNote("search unreachable", box); return; }
+  } catch (e) {
+    // offline the cached rows already on screen are the answer; only an
+    // empty box earns the error note
+    if (e.name !== "AbortError" && !box.querySelector("div:not(.note)"))
+      cityNote("search unreachable", box);
+    return;
+  }
   box.innerHTML = "";
-  if (!res.length) return cityNote("no matches", box);
+  for (const r2 of loc) cityRow(box, r2, onPick);   // cached rows stay on top
+  if (!res.length && !loc.length) return cityNote("no matches", box);
   const shown = new Set();   // city + its admin boundary arrive as twins
   for (const p of res) {
     const d = document.createElement("div");
@@ -3115,6 +3534,9 @@ async function citySearch(q, box, onPick) {
       .filter(x => x && x !== name).reduce((s, x) => s + ", " + x, name);
     if (shown.has(label)) continue;
     shown.add(label);
+    // the cached list already shows this city
+    if (loc.some(l => cityFold(l.name) === cityFold(name)
+        && surfDist(l.lat, l.lon, +p.lat, +p.lon) < 30000)) continue;
     d.textContent = label;
     d.title = p.display_name;
     d.onclick = () => onPick(+p.lat, +p.lon, name, label);
@@ -3125,6 +3547,7 @@ $("cityInput").addEventListener("input", () => {
   clearTimeout(cityTimer);
   const q = $("cityInput").value.trim();
   if (q.length < 2) { $("cityResults").innerHTML = ""; return; }
+  showLocalCities(q, $("cityResults"), cityGo);   // instant, from the cache
   cityTimer = setTimeout(() => citySearch(q), 400);
 });
 $("cityInput").addEventListener("keydown", e => {
@@ -3214,6 +3637,7 @@ $("icbmCity").addEventListener("input", () => {
   clearTimeout(icbmTimer);
   const q = $("icbmCity").value.trim();
   if (q.length < 2) { $("icbmResults").innerHTML = ""; return; }
+  showLocalCities(q, $("icbmResults"), icbmPick);   // instant, from the cache
   icbmTimer = setTimeout(() => citySearch(q, $("icbmResults"), icbmPick), 400);
 });
 $("icbmCity").addEventListener("keydown", e => {
@@ -3371,6 +3795,7 @@ window.__sim = {
   get sim() { return sim; }, get simStatus() { return simStatus; },
   get launchStage() { return launchStage; }, get launch() { return launch; },
   get windProfile() { return windProfile; }, get mapReady() { return mapReady; },
+  get windProfileMeta() { return windProfileMeta; },
   get cam() { return cam; }, get line3dOk() { return line3d.ok; },
   globe, terrainAt, isa, windAt, simAlt: () => sim ? simAlt(sim) : null,
   fmtDist, fmtAlt, fmtSpeed, applyPreset, cityGo, citySearch,

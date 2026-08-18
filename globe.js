@@ -703,7 +703,7 @@ void main() {
 }`;
 
 /* ---------- renderer ---------- */
-const GLOBE_BUILD = "2026-08-18g";
+const GLOBE_BUILD = "2026-08-18i";
 class Globe {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -738,7 +738,16 @@ class Globe {
     this.zone = null;            // ground colour bands (blast rings)
     this.markers = new Set();
     this.frame = 0;
-    this.refinePx = REFINE_PX;   // adaptive: coarsens when tile counts blow up
+    // celestial clock: the app sets simTime (ms epoch) so the sun, moon,
+    // planets, stars and day/night follow the SIMULATED wall clock during
+    // a flight; null falls back to real time
+    this.simTime = null;
+    // performance knobs, instance-level so mobileProfile() can lower them
+    this.maxDpr = Infinity;      // canvas resolution cap (phones ship dpr 3)
+    this.refineBase = REFINE_PX; // the governor's fine-detail floor
+    this.bldgDist = BLDG_DIST;
+    this.bldgAglMax = 12000;
+    this.refinePx = this.refineBase;   // adaptive: coarsens when tile counts blow up
     this.lastTiles = 0;
     this.stats = { tiles: 0, texLoads: 0, hgtLoads: 0, rebuilds: 0, buildings: 0 };
     this.wantImg = new Map();    // key -> priority, rebuilt each frame
@@ -951,16 +960,16 @@ class Globe {
     const P = this.camPos;
     const camR = Math.hypot(P[0], P[1], P[2]);
     const up = [P[0] / camR, P[1] / camR, P[2] / camR];
-    const sun = this.sunDirEcef(Date.now());
+    const sun = this.sunDirEcef(this._now());
     this.sunNow = sun; this.camRNow = camR;
     const sdu = sun[0] * up[0] + sun[1] * up[1] + sun[2] * up[2];
     this.sunElevNow = sdu;
-    const mn = this.moonEcef(Date.now());
+    const mn = this.moonEcef(this._now());
     const mvx = mn.pos[0] - P[0], mvy = mn.pos[1] - P[1], mvz = mn.pos[2] - P[2];
     const md = Math.hypot(mvx, mvy, mvz);
     const mdir = [mvx / md, mvy / md, mvz / md];
     // lunar north ~ ecliptic pole, orthogonalized against the sub-Earth axis
-    const th2 = this.gmstRad(Date.now());
+    const th2 = this.gmstRad(this._now());
     const eps2 = 23.439 * D2R;
     const pole = [-Math.sin(th2) * Math.sin(eps2), -Math.cos(th2) * Math.sin(eps2), Math.cos(eps2)];
     const mX = [-mdir[0], -mdir[1], -mdir[2]];
@@ -986,7 +995,18 @@ class Globe {
       gl.uniform3fv(u.uAzY, ay);
       gl.uniform3fv(u.uSun, sun);
     };
-    this._lutPass(this.pSkyView, this.tSkyV, 192, 108, common);
+    // The sky-view LUT's CONTENT depends only on camera radius and sun
+    // elevation (the atmosphere is spherically symmetric; horizontal moves
+    // only rotate the frame vectors, recomputed above every frame), so the
+    // 192x108 raymarch reruns only when either input moves perceptibly:
+    // 150 m of altitude near the ground, 2% of altitude higher up, ~0.06 deg
+    // of sun travel (~14 s of wall clock), with a 120-frame backstop.
+    const L = this._lutState || (this._lutState = { camR: -1e9, sunE: 99, frame: -1e9 });
+    if (Math.abs(camR - L.camR) > Math.max(150, 0.02 * (L.camR - GLOBE_R))
+        || Math.abs(sdu - L.sunE) > 0.001 || this.frame - L.frame > 120) {
+      this._lutPass(this.pSkyView, this.tSkyV, 192, 108, common);
+      L.camR = camR; L.sunE = sdu; L.frame = this.frame;
+    }
     // the froxel volume is gone: terrain aerial now derives from the
     // sky-view LUT + closed-form opacity in the tile shader (the 3D-texture
     // path misrendered on real GPUs while passing on SwiftShader)
@@ -1088,7 +1108,7 @@ class Globe {
   }
 
   _resize() {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(window.devicePixelRatio || 1, this.maxDpr);
     const w = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
     const h = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
     if (this.canvas.width !== w || this.canvas.height !== h) {
@@ -1560,27 +1580,33 @@ class Globe {
         vi += 4;
       }
     }
-    if (!s.vao) {
-      s.vao = gl.createVertexArray();
-      s.vbuf = gl.createBuffer(); s.ibuf = gl.createBuffer();
-      gl.bindVertexArray(s.vao);
-      gl.bindBuffer(gl.ARRAY_BUFFER, s.vbuf);
-      gl.enableVertexAttribArray(0);
-      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
-      gl.enableVertexAttribArray(1);
-      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
-      gl.enableVertexAttribArray(2);
-      gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, s.ibuf);
-      gl.bindVertexArray(null);
-    }
+    // FRESH buffers and VAO on every rebuild, old ones deleted after the
+    // swap. Re-specifying (bufferData) a buffer that an in-flight draw may
+    // still reference is legal GL but driver-dependent in practice:
+    // SwiftShader and desktop NVIDIA masked it, while RW's Mesa laptop
+    // blinked the ENTIRE trail on rebuild frames (whole line one frame,
+    // nothing the next, both screenshotted 2026-08-18). Deleting the old
+    // buffer is safe: GL defers the free until no draw references it.
+    const old = { vao: s.vao, vbuf: s.vbuf, ibuf: s.ibuf };
+    s.vao = gl.createVertexArray();
+    s.vbuf = gl.createBuffer(); s.ibuf = gl.createBuffer();
     gl.bindVertexArray(s.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, s.vbuf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vs), gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vs), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, s.ibuf);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(is), gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(is), gl.STATIC_DRAW);
     gl.bindVertexArray(null);
     s.n = is.length;
+    if (old.vao) {
+      gl.deleteVertexArray(old.vao);
+      gl.deleteBuffer(old.vbuf); gl.deleteBuffer(old.ibuf);
+    }
   }
 
   // Coloured bands on the ground around a point (blast rings), as
@@ -1654,6 +1680,22 @@ class Globe {
   // is proportional to the time speed: at 1000x the arrow and the cross were
   // sized from 192 km when the camera was 945 m away, 94 times too big.
   syncCamera() { this._updateCamera(); }
+  _now() { return this.simTime ?? Date.now(); }
+
+  // Phone GPUs get a proportionally lighter frame: canvas capped at 1.5x
+  // (a dpr-3 phone paints 4x fewer pixels; the DOM stays native-sharp),
+  // coarser tile refinement, buildings nearer and cut off lower, aniso x4.
+  // Desktop keeps every default; the app calls this once when it detects a
+  // coarse pointer.
+  mobileProfile() {
+    this.maxDpr = 1.5;
+    this.refineBase = 480;
+    this.refinePx = Math.max(this.refinePx, this.refineBase);
+    this.bldgDist = 5000;
+    this.bldgAglMax = 8000;
+    this.anisoMax = Math.min(4, this.anisoMax);
+    this._resize();
+  }
 
   // meters of world per CSS pixel at a given point (for sizing arrows)
   mppAt(lat, lon, h) {
@@ -1755,20 +1797,27 @@ class Globe {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // stars: additive over the sky, before terrain (which overdraws them)
-    if (this.starCount) {
+    // stars: additive over the sky, before terrain (which overdraws them).
+    // In daylight below ~1.5 km the pass provably contributes nothing (every
+    // non-hit ray's closest-approach altitude is the camera's own, the
+    // shader's sky term saturates at 1 and uNight is 0, so vA = 0 for all
+    // 9,096 points), so the pass and the per-frame planet ephemeris are
+    // skipped there rather than drawn invisibly.
+    const nightF = useH
+      ? Math.max(0, Math.min(1, (0.02 - this.sunElevNow) / 0.12)) : 0;
+    const camAltNow = Math.hypot(this.camPos[0], this.camPos[1], this.camPos[2]) - GLOBE_R;
+    if (this.starCount && (nightF > 0 || camAltNow > 1200)) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE);
       gl.useProgram(this.pStar.p);
       const su = this.pStar.u;
       gl.uniformMatrix4fv(su.uVP, false, this.vp);
-      gl.uniform1f(su.uGmst, this.gmstRad(Date.now()));
+      gl.uniform1f(su.uGmst, this.gmstRad(this._now()));
       gl.uniform1f(su.uDist, 3e7);
       gl.uniform3fv(su.uEarthC, C);
       gl.uniform1f(su.uR, GLOBE_R);
-      gl.uniform1f(su.uPxScale, window.devicePixelRatio || 1);
-      gl.uniform1f(su.uNight, useH
-        ? Math.max(0, Math.min(1, (0.02 - this.sunElevNow) / 0.12)) : 0);
+      gl.uniform1f(su.uPxScale, this.dpr);
+      gl.uniform1f(su.uNight, nightF);
       gl.bindBuffer(gl.ARRAY_BUFFER, this.starBuf);
       const L = this.starLoc;
       gl.enableVertexAttribArray(L.dir);
@@ -1781,7 +1830,7 @@ class Globe {
       // the five naked-eye planets ride the same pipeline: equatorial
       // directions and apparent magnitudes recomputed each frame, streamed
       // into a tiny second buffer, rotated by the same GMST
-      const pls = this.planetsEq(Date.now());
+      const pls = this.planetsEq(this._now());
       if (!this.planetBuf) this.planetBuf = gl.createBuffer();
       const pa = new Float32Array(pls.length * 5);
       pls.forEach((p, i) => pa.set([p.eq[0], p.eq[1], p.eq[2], p.mag, p.bv], i * 5));
@@ -1837,7 +1886,7 @@ class Globe {
     // tiles) coarsen the refinement target instead of thrashing every
     // cache; quiet scenes ease back toward full detail
     if (list.length > 520) this.refinePx = Math.min(this.refinePx * 1.12, 1024);
-    else if (list.length < 320) this.refinePx = Math.max(this.refinePx * 0.94, REFINE_PX);
+    else if (list.length < 320) this.refinePx = Math.max(this.refinePx * 0.94, this.refineBase);
     list.sort((a, b) => a.z - b.z);          // parents first: children overdraw
     for (const t of list) {
       this._wantTex(t.z, t.x, t.y, t.px);
@@ -2135,16 +2184,26 @@ Globe.prototype._bldgFetchTpl = function () {
     B.tpl = j.tiles[0];
   }).catch(() => { B.tplLoading = false; });
 };
-Globe.prototype._bldgBuild = function (z, x, y, data) {
-  const gl = this.gl;
+// Incremental mesh build. A dense downtown tile costs 13-48 ms of ear
+// clipping in one gulp, a visible hitch on every machine, so the per-poly
+// loop runs under a time budget spread across frames (the cursor lives on
+// this.bldg) and the mesh uploads only when the last poly lands.
+Globe.prototype._bldgBuildStart = function (z, x, y, data) {
   const geo = this._tileGeo(z, x, y);
   const anchor = ecef(geo.latM, geo.lonM, 0);
   const up = vunit(anchor);
   const sun = vunit([up[0] * 1.2 + 0.6, up[1] * 1.2 + 0.35, up[2] * 1.2 + 0.5]);
+  return { z, x, y, data, geo, anchor, up, sun, i: 0, vs: [], is: [] };
+};
+// advance until the deadline; returns the finished mesh or null (more to do)
+Globe.prototype._bldgBuildStep = function (c, deadline) {
+  const gl = this.gl;
+  const { z, x, y, data, anchor, up, sun, geo } = c;
   const { polys, extent } = data;
-  const vs = [], is = [];
+  const vs = c.vs, is = c.is;
   const toLL = (px, py) => [ty2lat(y + py / extent, z), tx2lon(x + px / extent, z)];
-  for (const poly of polys) {
+  while (c.i < polys.length) {
+    const poly = polys[c.i++];
     const outer = poly.rings[0];
     const [bLat, bLon] = toLL(outer[0][0], outer[0][1]);
     const base = this.terrainAt(bLat, bLon) ?? 0;
@@ -2176,7 +2235,9 @@ Globe.prototype._bldgBuild = function (z, x, y, data) {
         is.push(b0, b0 + 1, b0 + 2, b0, b0 + 2, b0 + 3);
       }
     }
+    if (performance.now() > deadline) break;
   }
+  if (c.i < polys.length) return null;         // continue next frame
   const vao = gl.createVertexArray();
   gl.bindVertexArray(vao);
   const vb = gl.createBuffer();
@@ -2194,13 +2255,13 @@ Globe.prototype._bldgBuild = function (z, x, y, data) {
            hgtStamp: this._hgtStampFor(z, x, y), data };
 };
 Globe.prototype._renderBuildings = function (list) {
-  if (this.camAglNow > 12000) return;          // invisible from up there
+  if (this.camAglNow > this.bldgAglMax) return;   // invisible from up there
   this._bldgInit();
   const B = this.bldg;
   // which z14 building tiles are close enough to matter this frame
   const want = new Set();
   for (const t of list) {
-    if (t.z < BLDG_Z || t.dist > BLDG_DIST) continue;
+    if (t.z < BLDG_Z || t.dist > this.bldgDist) continue;
     const dz = t.z - BLDG_Z;
     want.add(tkey(BLDG_Z, t.x >> dz, t.y >> dz));
   }
@@ -2236,15 +2297,26 @@ Globe.prototype._renderBuildings = function (list) {
         .finally(() => B.inflight.delete(key));
     }
   }
-  // build at most one pending mesh per frame
-  let builtThisFrame = false;
-  if (B.pending.size) {
+  // advance the incremental build under a ~5 ms budget; the old mesh (if
+  // any) keeps drawing until its replacement is complete, so a rebase never
+  // blanks the tile
+  if (!B.cursor && B.pending.size) {
     const [key, data] = B.pending.entries().next().value;
     B.pending.delete(key);
     const [z, x, y] = key.split("/").map(Number);
-    B.meshes.set(key, this._bldgBuild(z, x, y, data));
-    this.stats.buildings = B.meshes.size;
-    builtThisFrame = true;
+    B.cursor = { key, c: this._bldgBuildStart(z, x, y, data) };
+  }
+  if (B.cursor) {
+    const m = this._bldgBuildStep(B.cursor.c, performance.now() + 5);
+    if (m) {
+      const gl2 = this.gl, old = B.meshes.get(B.cursor.key);
+      if (old && old.vao) {
+        gl2.deleteVertexArray(old.vao); gl2.deleteBuffer(old.vb); gl2.deleteBuffer(old.ib);
+      }
+      B.meshes.set(B.cursor.key, m);
+      this.stats.buildings = B.meshes.size;
+      B.cursor = null;
+    }
   }
   // draw
   const gl = this.gl;
@@ -2274,16 +2346,12 @@ Globe.prototype._renderBuildings = function (list) {
     const m = B.meshes.get(key);
     if (!m || !m.n) continue;
     m.frame = this.frame;
-    // terrain arrived since this mesh was built: rebase the buildings
-    // (same one-build-per-frame budget as fresh builds)
-    if (!builtThisFrame) {
+    // terrain arrived since this mesh was built: queue a rebase through the
+    // same incremental cursor; the stale mesh keeps drawing meanwhile
+    if (!B.cursor && m.data) {
       const [z, x, y] = key.split("/").map(Number);
-      if (this._hgtStampFor(z, x, y) !== m.hgtStamp) {
-        gl.deleteVertexArray(m.vao); gl.deleteBuffer(m.vb); gl.deleteBuffer(m.ib);
-        B.meshes.set(key, this._bldgBuild(z, x, y, m.data));
-        builtThisFrame = true;
-        continue;
-      }
+      if (this._hgtStampFor(z, x, y) !== m.hgtStamp)
+        B.cursor = { key, c: this._bldgBuildStart(z, x, y, m.data) };
     }
     gl.uniform3fv(u.uSun, useH ? this.sunNow : m.sun);
     gl.uniform3f(u.uOrigin,
