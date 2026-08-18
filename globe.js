@@ -279,8 +279,12 @@ uniform mat4 uZoneCol;      // one rgba column per band, alpha = how strongly
 // overlapping damage means: inside two 5 psi rings is no worse than one, but
 // inside one 20 psi ring and one 5 psi ring is a 20 psi place.
 #define ZF_MAX 32
-uniform vec3 uZFC[ZF_MAX];  // burst centres, camera-relative like uZoneC
-uniform int uZFN;           // how many of them apply to this tile
+// xyz = centre, camera-relative like uZoneC; w = the burst's BLAST scale,
+// the cube root of its yield in kilotons, because a real salvo mixes warhead
+// types and a 8 kt W76-2 does not make the same hole as a 800 kt Voevoda
+uniform vec4 uZFC[ZF_MAX];
+uniform float uZFT[ZF_MAX];  // thermal scale: yield^0.41, a different power
+uniform int uZFN;            // how many bursts apply to this tile
 vec4 zoneBand(float d) {
   if (d < uZoneR.x) return uZoneCol[0];
   if (d < uZoneR.y) return uZoneCol[1];
@@ -290,14 +294,21 @@ vec4 zoneBand(float d) {
 }
 vec3 zoneTint(vec3 col, vec3 p) {
   if (uZFN > 0) {
-    float best = 1e30;
+    // with mixed yields the nearest burst is not necessarily the worst one,
+    // so this takes the SEVEREST band any burst puts the point in; uZoneR
+    // holds the four radii for a one-kilotonne burst and each is scaled
+    int band = 4;
     for (int i = 0; i < ZF_MAX; i++) {
-      if (i >= uZFN) break;
-      best = min(best, distance(p, uZFC[i]));
-      // inside the severest band already: nothing nearer can change the answer
-      if (best < uZoneR.x) break;
+      if (i >= uZFN || band == 0) break;
+      float d = distance(p, uZFC[i].xyz);
+      float sB = uZFC[i].w, sT = uZFT[i];
+      if (d < uZoneR.x * sB) { band = 0; }
+      else if (d < uZoneR.y * sB) band = min(band, 1);
+      else if (d < uZoneR.z * sT) band = min(band, 2);
+      else if (d < uZoneR.w * sB) band = min(band, 3);
     }
-    vec4 z = zoneBand(best);
+    if (band == 4) return col;
+    vec4 z = uZoneCol[band];
     return z.a > 0.0 ? mix(col, z.rgb, z.a) : col;
   }
   if (uZoneR.w <= 0.0) return col;
@@ -2039,23 +2050,32 @@ class Globe {
    * loop over every burst for every pixel of ground on screen.
    * A burst is written into every cell its outer ring reaches, so no cell
    * ever has to look at its neighbours. */
+  // radii: the four band radii for a ONE KILOTONNE burst; each impact then
+  // carries its own yield and is scaled from these, so one field can hold a
+  // salvo of mixed warhead types
   setZoneField(radii, colors) {
     if (!radii) { this.zf = null; return; }
     // 1 degree buckets, only ever walked on the CPU, to keep the per-tile
     // "which bursts touch you" question cheap
-    this.zf = { radii, colors, pts: [], ecef: [], grid: new Map(), gen: 0 };
+    this.zf = { radii, colors, pts: [], ecef: [], sB: [], sT: [],
+                grid: new Map(), gen: 0, maxOuter: 0 };
   }
   clearZoneField() { this.zf = null; }
-  // add bursts as [lat, lon] pairs
+  // add bursts as [lat, lon, kilotonnes] triples (yield defaults to 1)
   addZoneImpacts(list) {
     const z = this.zf;
     if (!z || !list.length) return;
-    for (const [la, lo] of list) {
+    for (const [la, lo, kt] of list) {
       const i = z.pts.length;
-      z.pts.push([la, lo]);
+      const y = Math.max(1e-4, kt || 1);
+      z.pts.push([la, lo, y]);
       // the burst sits on the ground it lands on, so tall things near it
       // read slant range the way the single-ring path does
       z.ecef.push(ecef(la, lo, this.terrainAt(la, lo) ?? 0));
+      // blast scales as the cube root of yield, thermal a little faster
+      const sB = Math.cbrt(y), sT = Math.pow(y, 0.41);
+      z.sB.push(sB); z.sT.push(sT);
+      z.maxOuter = Math.max(z.maxOuter, z.radii[3] * sB, z.radii[2] * sT);
       const key = (Math.floor(la) + 90) * 360 + (Math.floor(lo) + 180);
       let b = z.grid.get(key);
       if (!b) z.grid.set(key, b = []);
@@ -2067,7 +2087,7 @@ class Globe {
   // shader's uniform array holds
   _zfForTile(geo) {
     const z = this.zf, out = [];
-    const pad = z.radii[3];
+    const pad = z.maxOuter || z.radii[3];
     const dLat = pad / 111320 + 1;
     const cosl = Math.max(0.02, Math.cos(geo.latM * D2R));
     const dLon = pad / (111320 * cosl) + 1;
@@ -2114,15 +2134,18 @@ class Globe {
       this._zfCache.map.set(key, hit);
     }
     if (!hit.length) { this.gl.uniform1i(u.uZFN, 0); return false; }
-    const arr = new Float32Array(hit.length * 3);
+    const arr = new Float32Array(hit.length * 4), th = new Float32Array(hit.length);
     for (let i = 0; i < hit.length; i++) {
-      const e = z.ecef[hit[i]];
-      arr[i*3] = e[0] - this.camPos[0];
-      arr[i*3+1] = e[1] - this.camPos[1];
-      arr[i*3+2] = e[2] - this.camPos[2];
+      const j = hit[i], e = z.ecef[j];
+      arr[i*4] = e[0] - this.camPos[0];
+      arr[i*4+1] = e[1] - this.camPos[1];
+      arr[i*4+2] = e[2] - this.camPos[2];
+      arr[i*4+3] = z.sB[j];
+      th[i] = z.sT[j];
     }
     const gl = this.gl;
-    gl.uniform3fv(u.uZFC, arr);
+    gl.uniform4fv(u.uZFC, arr);
+    gl.uniform1fv(u.uZFT, th);
     gl.uniform1i(u.uZFN, hit.length);
     gl.uniform4f(u.uZoneR, z.radii[0], z.radii[1], z.radii[2], z.radii[3]);
     const col = new Float32Array(16);
@@ -2138,6 +2161,8 @@ class Globe {
       z.ecef[i] = ecef(z.pts[i][0], z.pts[i][1], this.terrainAt(z.pts[i][0], z.pts[i][1]) ?? 0);
     z.gen++;
   }
+  // the biggest outer ring in the field, for sizing marks
+  zoneFieldOuter() { return this.zf ? this.zf.maxOuter : 0; }
 
   _zoneUniforms(u) {
     if (u.uZFN) this.gl.uniform1i(u.uZFN, 0);

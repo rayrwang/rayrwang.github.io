@@ -144,6 +144,8 @@
   #nukeCountryResults div { padding:6px 10px; background:rgba(28,33,40,.95); color:#ddd;
       cursor:pointer; border-top:1px solid rgba(255,255,255,.06); }
   #nukeCountryResults div:hover { background:rgba(59,130,246,.35); }
+  #nukeCountryResults .blocRow { color:#f6ad55; }
+  #nukeCountryResults .blocRow .hint { display:inline; font-size:11px; }
   #nukeChips { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0 0;
       max-height:96px; overflow-y:auto; }
   .chip { font-size:11px; padding:2px 7px; border-radius:10px; cursor:pointer;
@@ -272,7 +274,7 @@
     <option value="stock">The whole stockpile</option>
   </select></label>
   <div class="hint" id="nukeSrcNote" style="margin:3px 0 7px"></div>
-  <input id="nukeCountry" type="text" placeholder="Target country..." autocomplete="off" spellcheck="false">
+  <input id="nukeCountry" type="text" placeholder="Target countries or an alliance..." autocomplete="off" spellcheck="false">
   <div id="nukeCountryResults"></div>
   <div id="nukeChips"></div>
   <div class="row" style="justify-content:flex-start">
@@ -965,6 +967,47 @@ const ZONE_COLORS = {
  * `mirv` is the typical number of warheads one missile carries, which sets
  * how many rise together; `kt` is the yield of that country's usual
  * strategic warhead. */
+/* ---------- blocs ----------
+ * Nuclear questions are rarely one country against one country, so both ends
+ * of the dialogue take a bloc. On the LAUNCHING side only members that
+ * actually have warheads contribute (NATO fires American, British and French
+ * weapons; nobody else in it owns any). On the TARGET side every member
+ * counts, which is the point of an alliance.
+ * Membership is as of 2025: NATO includes Finland (2023) and Sweden (2024).
+ * The country names must match the city file's names exactly, hence "The
+ * Netherlands" and "Czechia". */
+const NUKE_BLOCS = {
+  nato: { name: "NATO", fire: ["us", "gb", "fr"], members: [
+    "Albania", "Belgium", "Bulgaria", "Canada", "Croatia", "Czechia", "Denmark",
+    "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Iceland",
+    "Italy", "Latvia", "Lithuania", "Luxembourg", "Montenegro", "The Netherlands",
+    "North Macedonia", "Norway", "Poland", "Portugal", "Romania", "Slovakia",
+    "Slovenia", "Spain", "Sweden", "Turkey", "United Kingdom", "United States"],
+    aka: ["nato", "north atlantic treaty organization", "the west", "alliance"] },
+  csto: { name: "Russia and the CSTO", fire: ["ru"], members: [
+    "Armenia", "Belarus", "Kazakhstan", "Kyrgyzstan", "Russia", "Tajikistan"],
+    aka: ["csto", "collective security treaty organization", "russia and allies"] },
+  eu: { name: "European Union", fire: ["fr"], members: [
+    "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czechia", "Denmark",
+    "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland",
+    "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta", "The Netherlands",
+    "Poland", "Portugal", "Romania", "Slovakia", "Slovenia", "Spain", "Sweden"],
+    aka: ["eu", "european union", "europe"] },
+  fiveeyes: { name: "Five Eyes", fire: ["us", "gb"], members: [
+    "Australia", "Canada", "New Zealand", "United Kingdom", "United States"],
+    aka: ["five eyes", "fiveeyes", "anglosphere", "aukus"] },
+  pacific: { name: "US Pacific allies", fire: ["us"], members: [
+    "Japan", "South Korea", "Philippines", "Thailand", "Australia", "New Zealand"],
+    aka: ["us pacific allies", "pacific allies", "east asia allies"] },
+  p5: { name: "The five NPT powers", fire: ["us", "ru", "cn", "gb", "fr"], members: [
+    "United States", "Russia", "China", "United Kingdom", "France"],
+    aka: ["p5", "npt", "security council", "permanent five"] },
+  all: { name: "Every nuclear power", fire: ["ru", "us", "cn", "fr", "gb", "in", "pk", "il", "kp"],
+    members: ["Russia", "United States", "China", "France", "United Kingdom",
+              "India", "Pakistan", "Israel", "North Korea"],
+    aka: ["every nuclear power", "all nuclear powers", "everyone", "nuclear powers"] },
+};
+
 // Each site carries its LEG, because the three legs of a triad do genuinely
 // different things and it shows on the map:
 //   silo   - fires from the spot given, on a ballistic arc
@@ -977,139 +1020,380 @@ const ZONE_COLORS = {
 //            arrives hours after the missiles, which is the real shape of
 //            the thing (see EX_AIR_SPEED)
 const NUKE_POWERS = {
-  ru: { name: "Russia", stock: 4309, deployed: 1718, kt: 500, mirv: 4,
-    wh: "typical Russian strategic warhead, ~500 kt (Yars, SS-18 class)",
-    sites: [
-      { n: "Uzhur (62nd Missile Division)",      lat: 55.31, lon: 89.83, w: 3, k: "silo", r: 70000 },
-      { n: "Dombarovsky (13th, Yasny)",          lat: 51.05, lon: 59.85, w: 3, k: "silo", r: 70000 },
-      { n: "Tatishchevo (60th)",                 lat: 51.66, lon: 45.55, w: 3, k: "silo", r: 60000 },
-      { n: "Kozelsk (28th)",                     lat: 54.03, lon: 35.78, w: 2, k: "silo", r: 55000 },
-      { n: "Teykovo (54th)",                     lat: 56.86, lon: 40.54, w: 2, k: "silo", r: 45000 },
-      { n: "Yoshkar-Ola (14th)",                 lat: 56.63, lon: 47.89, w: 2, k: "silo", r: 45000 },
-      { n: "Novosibirsk (39th)",                 lat: 55.20, lon: 82.90, w: 2, k: "silo", r: 45000 },
-      { n: "Barnaul (35th)",                     lat: 53.36, lon: 83.76, w: 2, k: "silo", r: 45000 },
-      { n: "Irkutsk (29th)",                     lat: 52.28, lon: 104.28, w: 2, k: "silo", r: 45000 },
-      { n: "Vypolzovo (7th)",                    lat: 57.85, lon: 33.60, w: 1, k: "silo", r: 40000 },
-      { n: "Nizhny Tagil (42nd)",                lat: 57.90, lon: 60.00, w: 1, k: "silo", r: 40000 },
-      { n: "Barents Sea bastion (Northern Fleet SSBNs)",
-                                                 lat: 74.0, lon: 38.0, w: 1, k: "sub", r: 320000 },
-      { n: "Kara Sea patrol (Northern Fleet SSBNs)",
-                                                 lat: 76.5, lon: 62.0, w: 1, k: "sub", r: 300000 },
-      { n: "Greenland Sea patrol (Northern Fleet SSBNs)",
-                                                 lat: 76.0, lon: 5.0, w: 1, k: "sub", r: 320000 },
-      { n: "Sea of Okhotsk bastion (Pacific Fleet SSBNs)",
-                                                 lat: 54.5, lon: 149.5, w: 1, k: "sub", r: 280000 },
-      { n: "Kamchatka approaches (Pacific Fleet SSBNs)",
-                                                 lat: 50.0, lon: 160.0, w: 1, k: "sub", r: 300000 },
-      { n: "Engels-2 (Tu-95/Tu-160 bombers)",    lat: 51.48, lon: 46.21, w: 1, k: "bomber" },
-      { n: "Ukrainka (Tu-95 bombers)",           lat: 51.17, lon: 128.45, w: 1, k: "bomber" },
-      // Russia's own sharing arrangement: tactical weapons moved to Belarus
-      // from 2023, announced by both governments, stored and delivered by
-      // Belarusian Su-25s and Iskander launchers
-      { n: "Asipovichy, Belarus (forward-deployed)", lat: 53.30, lon: 28.64, w: 1, k: "silo", c: "Belarus" },
-      { n: "Lida, Belarus (forward-deployed)",   lat: 53.88, lon: 25.30, w: 1, k: "bomber", c: "Belarus" },
+  // Russia. FAS Nuclear Notebook (Russian nuclear weapons, 2026) and SIPRI
+  // Yearbook 2026. Two structural facts shape this entry. First, seven of the
+  // eleven missile divisions are ROAD-MOBILE: they have no launch point at
+  // all, only a garrison, regiment bases (all of which Podvig geolocated) and
+  // a dispersal area, and Russian exercise reporting has Yars regiments
+  // driving up to 100 km to field positions, which is the radius used here.
+  // Second, nobody outside Russia knows whether the 46 SS-18 silos are
+  // loaded: FAS assumes they are, Podvig assesses they are probably empty,
+  // and that one assumption moves about 460 warheads.
+  ru: { name: "Russia", stock: 4400, deployed: 1796,
+    note: "Around 950 to 1,000 warheads could fly in minutes: the silo and "
+      + "mobile ICBMs and one or two submarines. Russia keeps no continuous "
+      + "sea patrol, and its tactical warheads sit de-mated in storage.",
+    systems: [
+      { id: "ss18", name: "SS-18 Voevoda", leg: "silo", launchers: 40, wpl: 5,
+        kt: 500, ktRange: "500-800", range: 15000, sites: [
+        { n: "62nd Division, Uzhur, Krasnoyarsk", lat: 55.2867, lon: 89.8250,
+          r: 60000, share: 0.6, conf: "published", src: "ZATO Solnechny; silos to 69 km" },
+        { n: "13th Division, Dombarovsky, Orenburg", lat: 51.0269, lon: 59.8692,
+          r: 30000, share: 0.4, conf: "published", src: "ZATO Komarovsky" }] },
+      { id: "avan", name: "SS-19 with Avangard glide vehicle", leg: "silo",
+        launchers: 12, wpl: 1, kt: 500, ktRange: "not published", range: 10000,
+        sites: [
+        { n: "13th Division, Dombarovsky Avangard regiments", lat: 51.129,
+          lon: 59.781, r: 22000, conf: "published",
+          src: "12 silo coords, russianforces.org" }] },
+      { id: "topolm", name: "Topol-M (silo)", leg: "silo", launchers: 50, wpl: 1,
+        kt: 800, ktRange: "800", range: 10500, sites: [
+        { n: "60th Division, Tatishchevo, Saratov", lat: 51.6797, lon: 45.6231,
+          r: 56000, conf: "published", src: "ZATO Svetly; silos to 67 km" }] },
+      { id: "yarsS", name: "RS-24 Yars (silo)", leg: "silo", launchers: 24, wpl: 3,
+        kt: 250, ktRange: "100-300", range: 10500, sites: [
+        { n: "28th Guards Division, Kozelsk, Kaluga", lat: 54.0386, lon: 35.7744,
+          r: 54000, conf: "published", src: "silos to 65 km" }] },
+      { id: "yarsM", name: "RS-24 Yars (road-mobile)", leg: "mobile", launchers: 180,
+        wpl: 3, kt: 250, ktRange: "100-300", range: 10500, sites: [
+        { n: "54th Guards Division, Teykovo (mobile)", lat: 56.8733, lon: 40.5769,
+          r: 100000, conf: "published", src: "garrison; regiment bases mapped" },
+        { n: "7th Guards Division, Vypolzovo (mobile)", lat: 57.8672, lon: 33.6881,
+          r: 100000, conf: "published", src: "ZATO Ozyorny" },
+        { n: "14th Division, Yoshkar-Ola (mobile)", lat: 56.5669, lon: 48.0461,
+          r: 100000, conf: "published", src: "ZATO Rechnoy" },
+        { n: "42nd Division, Nizhny Tagil (mobile)", lat: 58.0369, lon: 60.3903,
+          r: 100000, conf: "published", src: "ZATO Svobodny" },
+        { n: "39th Guards Division, Novosibirsk (mobile)", lat: 55.1547, lon: 82.9503,
+          r: 100000, conf: "published", src: "Gvardeysky" },
+        { n: "29th Guards Division, Irkutsk (mobile)", lat: 52.3347, lon: 104.3767,
+          r: 100000, conf: "published", src: "ZATO Zelyony" },
+        { n: "35th Division, Barnaul (mobile)", lat: 53.5569, lon: 83.8383,
+          r: 100000, conf: "published", src: "ZATO Sibirsky; bases to 66 km" }] },
+      { id: "topolmM", name: "Topol-M (road-mobile)", leg: "mobile", launchers: 18,
+        wpl: 1, kt: 800, ktRange: "800", range: 10500, sites: [
+        { n: "54th Guards Division, Teykovo (mobile)", lat: 56.8733, lon: 40.5769,
+          r: 100000, conf: "published", src: "garrison" }] },
+      { id: "bulava", name: "Bulava SLBM (Borei class)", leg: "sub", launchers: 128,
+        wpl: 4, kt: 100, ktRange: "100", range: 8050, sites: [
+        { n: "Barents Sea bastion patrol area", lat: 73.5, lon: 40, r: 400000,
+          share: 0.6, conf: "assessed", src: "no patrol box is published" },
+        { n: "Sea of Okhotsk bastion patrol area", lat: 47, lon: 148, r: 250000,
+          share: 0.4, conf: "assessed", src: "no patrol box is published" }] },
+      { id: "sineva", name: "Sineva/Layner SLBM (Delta IV)", leg: "sub",
+        launchers: 80, wpl: 4, kt: 100, ktRange: "100", range: 9000, sites: [
+        { n: "Barents Sea bastion patrol area", lat: 73.5, lon: 40, r: 400000,
+          conf: "assessed", src: "no patrol box is published" }] },
+      { id: "tu95", name: "Tu-95MS with Kh-55/Kh-102 cruise missiles", leg: "bomber",
+        launchers: 45, wpl: 3.3, kt: 200, ktRange: "200-250", range: 10500, sites: [
+        { n: "Ukrainka, Amur (the main bomber concentration)", lat: 51.17,
+          lon: 128.445, r: 3000, share: 0.55, conf: "published", src: "FAS 2026" },
+        { n: "Engels-2, Saratov", lat: 51.4811, lon: 46.2106, r: 3000,
+          share: 0.25, conf: "published", src: "FAS 2026" },
+        { n: "Belaya, Irkutsk", lat: 52.915, lon: 103.575, r: 3000, share: 0.1,
+          conf: "published", src: "FAS 2026" },
+        { n: "Olenya, Murmansk (dispersal base)", lat: 68.1517, lon: 33.465,
+          r: 3000, share: 0.1, conf: "published", src: "used since Aug 2022" }] },
+      { id: "tu160", name: "Tu-160 with Kh-102 cruise missiles", leg: "bomber",
+        launchers: 15, wpl: 3.5, kt: 200, ktRange: "200-250", range: 13200, sites: [
+        { n: "Engels-2, Saratov", lat: 51.4811, lon: 46.2106, r: 3000,
+          conf: "published", src: "FAS 2026" }] },
+      // Forward-deployed and non-strategic. Warheads here are de-mated in
+      // peacetime, so they count toward the stockpile rather than the ready
+      // force; whether any have actually reached Belarus is unconfirmed.
+      { id: "iskander", name: "Iskander-M and Oreshnik (non-strategic)",
+        leg: "mobile", launchers: 168, wpl: 1.2, kt: 50, ktRange: "10-250",
+        range: 2000, sites: [
+        { n: "Kaliningrad storage site, near Kulikovo", lat: 54.838, lon: 20.354,
+          r: 30000, c: "Russia", share: 0.35, conf: "approximate",
+          src: "triangulated from FAS distances" },
+        { n: "Asipovichy, Belarus (465th Missile Brigade)", lat: 53.288,
+          lon: 28.642, r: 20000, c: "Belarus", share: 0.25, conf: "published",
+          src: "FAS; warhead presence unconfirmed" },
+        { n: "Krychaw-6, Belarus (Oreshnik)", lat: 53.7315, lon: 31.9151,
+          r: 15000, c: "Belarus", share: 0.2, conf: "approximate",
+          src: "on duty per Russian MoD, Dec 2025" },
+        { n: "Lida air base, Belarus (Su-25, gravity bombs)", lat: 53.8768,
+          lon: 25.3713, r: 3000, c: "Belarus", share: 0.2, conf: "published",
+          src: "FAS" }] },
     ] },
-  us: { name: "United States", stock: 3700, deployed: 1670, kt: 300, mirv: 3,
-    wh: "W87/W88, 300-475 kt (Minuteman III, Trident II)",
-    sites: [
-      { n: "Minot AFB, North Dakota",            lat: 48.4159, lon: -101.3306, w: 3, k: "silo", r: 65000 },
-      { n: "Malmstrom AFB, Montana",             lat: 47.5050, lon: -111.1830, w: 3, k: "silo", r: 85000 },
-      { n: "F.E. Warren AFB, Wyoming",           lat: 41.1320, lon: -104.8670, w: 3, k: "silo", r: 75000 },
-      { n: "Northeast Pacific patrol (Bangor SSBNs)", lat: 44.0, lon: -142.0, w: 1, k: "sub", r: 450000 },
-      { n: "Central Pacific patrol (Bangor SSBNs)", lat: 32.0, lon: -160.0, w: 1, k: "sub", r: 500000 },
-      { n: "Western Pacific patrol (Bangor SSBNs)", lat: 28.0, lon: 176.0, w: 1, k: "sub", r: 450000 },
-      { n: "Northwest Atlantic patrol (Kings Bay SSBNs)",
-                                                 lat: 39.0, lon: -55.0, w: 1, k: "sub", r: 450000 },
-      { n: "Mid-Atlantic patrol (Kings Bay SSBNs)",
-                                                 lat: 30.0, lon: -40.0, w: 1, k: "sub", r: 500000 },
-      { n: "Norwegian Sea patrol (Kings Bay SSBNs)",
-                                                 lat: 66.0, lon: -5.0, w: 1, k: "sub", r: 380000 },
-      { n: "Eastern Atlantic patrol (Kings Bay SSBNs)",
-                                                 lat: 48.0, lon: -22.0, w: 1, k: "sub", r: 420000 },
-      { n: "Whiteman AFB, Missouri (B-2)",       lat: 38.7300, lon: -93.5480, w: 1, k: "bomber" },
-      { n: "Barksdale AFB, Louisiana (B-52)",    lat: 32.5018, lon: -93.6627, w: 1, k: "bomber" },
-      // NATO nuclear sharing: American B61 gravity bombs sit in vaults on
-      // allied soil, to be carried by that country's own aircraft. The bases
-      // are long-reported (FAS Nuclear Notebook) and several host governments
-      // have since said so themselves.
-      // `c` is the country the base SITS IN, which is not the country that
-      // owns the weapons: that is the whole point of sharing, and it means
-      // these get struck when their host is the one being shot at
-      { n: "Büchel AB, Germany (B61 sharing)",   lat: 50.17, lon: 7.06, w: 1, k: "bomber", c: "Germany" },
-      { n: "Kleine Brogel AB, Belgium (B61 sharing)", lat: 50.76, lon: 5.47, w: 1, k: "bomber", c: "Belgium" },
-      { n: "Volkel AB, Netherlands (B61 sharing)", lat: 51.66, lon: 5.71, w: 1, k: "bomber", c: "Netherlands" },
-      { n: "Aviano AB, Italy (B61 sharing)",     lat: 46.03, lon: 12.60, w: 1, k: "bomber", c: "Italy" },
-      { n: "Ghedi AB, Italy (B61 sharing)",      lat: 45.43, lon: 10.28, w: 1, k: "bomber", c: "Italy" },
-      { n: "Incirlik AB, Turkey (B61 sharing)",  lat: 37.00, lon: 35.43, w: 1, k: "bomber", c: "Turkey" },
-      { n: "RAF Lakenheath, UK (B61 mission restored)", lat: 52.41, lon: 0.56, w: 1, k: "bomber", c: "United Kingdom" },
+  // United States. Force structure from the FAS Nuclear Notebook (US nuclear
+  // weapons, 2026) and SIPRI Yearbook 2026; New START lapsed 5 Feb 2026 with
+  // no successor, so 1,770 deployed is an observation rather than a ceiling.
+  // The reentry vehicle differs by wing, which is why the two Minuteman rows
+  // are separate: Minot flies the Mk-12A (W78, 335 kt), F.E. Warren the
+  // Mk-21 (W87, 300 kt), Malmstrom a mix nobody outside the programme knows.
+  // Silo fields are given at the CENTROID OF THEIR SILOS, not the air base:
+  // F.E. Warren's silos are mostly in Nebraska and Colorado, 108 km east of
+  // the base, and 82 of its 150 are not even in Wyoming.
+  us: { name: "United States", abbr: "US", stock: 3700, deployed: 1770,
+    note: "400 ICBM warheads and 4 to 5 submarines are ready in minutes; the "
+      + "bombers have not stood day-to-day alert since 1991, so about 800 of "
+      + "the 1,770 deployed could actually fly at once.",
+    systems: [
+      { id: "mm3a", name: "Minuteman III (Mk-12A)", leg: "silo", launchers: 200,
+        wpl: 1, kt: 335, ktRange: "335", range: 13000, sites: [
+        { n: "91st Missile Wing, Minot field, North Dakota", lat: 48.2284,
+          lon: -101.6608, r: 90000, conf: "published", src: "silo centroid, FAS/public records" },
+        { n: "341st Missile Wing, Malmstrom field, Montana (Mk-12A half)",
+          lat: 47.2534, lon: -110.4661, r: 140000, conf: "published",
+          src: "silo centroid; RV split unknown" }] },
+      { id: "mm3b", name: "Minuteman III (Mk-21/SERV)", leg: "silo", launchers: 200,
+        wpl: 1, kt: 300, ktRange: "300", range: 13000, sites: [
+        { n: "90th Missile Wing, F.E. Warren field (Wyoming, Nebraska, Colorado)",
+          lat: 41.1337, lon: -103.5717, r: 80000, conf: "published",
+          src: "silo centroid, 108 km east of the base" },
+        { n: "341st Missile Wing, Malmstrom field, Montana (Mk-21 half)",
+          lat: 47.2534, lon: -110.4661, r: 140000, conf: "published",
+          src: "silo centroid; RV split unknown" }] },
+      { id: "d5us", name: "Trident II D5 (Ohio class)", leg: "sub", launchers: 240,
+        wpl: 4.04, kt: 90, ktRange: "8 (W76-2), 90 (W76-1), 455 (W88)", range: 12000,
+        sites: [
+        { n: "Northeast Pacific patrol area (Bangor boats)", lat: 45, lon: -145,
+          r: 900000, share: 0.6, conf: "assessed",
+          src: "patrol boxes classified; DoD 1M sq mi" },
+        { n: "Western Atlantic patrol area (Kings Bay boats)", lat: 40, lon: -50,
+          r: 900000, share: 0.4, conf: "assessed",
+          src: "patrol boxes classified; DoD 1M sq mi" }] },
+      { id: "alcm", name: "B-52H with AGM-86B cruise missiles", leg: "bomber",
+        launchers: 46, wpl: 4.35, kt: 150, ktRange: "5-150 (W80-1)", range: 16000,
+        sites: [
+        { n: "Minot AFB, North Dakota (the only ALCM store)", lat: 48.4156,
+          lon: -101.3580, r: 3000, conf: "published", src: "FAA reference point" }] },
+      { id: "b2", name: "B-2A with B61-12 bombs", leg: "bomber", launchers: 19,
+        wpl: 5.26, kt: 50, ktRange: "0.3-50 selectable", range: 11000, sites: [
+        { n: "Whiteman AFB, Missouri", lat: 38.7303, lon: -93.5479, r: 3000,
+          conf: "published", src: "FAA reference point" }] },
+      // NATO nuclear sharing: American bombs in American custody, on allied
+      // soil, to be carried by that country's own aircraft. Each site records
+      // the country it SITS IN, so it is struck when its host is targeted.
+      { id: "b61eu", name: "B61-12 in Europe (nuclear sharing)", leg: "bomber",
+        launchers: 100, wpl: 1, kt: 50, ktRange: "0.3-50 selectable", range: 2200,
+        sites: [
+        { n: "Kleine Brogel AB, Belgium", lat: 51.1683, lon: 5.4700, r: 3000,
+          c: "Belgium", conf: "published", src: "FAS 2026" },
+        { n: "Büchel AB, Germany", lat: 50.1738, lon: 7.0633, r: 3000,
+          c: "Germany", conf: "published", src: "FAS 2026" },
+        { n: "Aviano AB, Italy", lat: 46.0319, lon: 12.5965, r: 3000,
+          c: "Italy", conf: "published", src: "FAS 2026" },
+        { n: "Ghedi AB, Italy", lat: 45.4326, lon: 10.2686, r: 3000,
+          c: "Italy", conf: "published", src: "FAS 2026" },
+        { n: "Volkel AB, The Netherlands", lat: 51.6572, lon: 5.7078, r: 3000,
+          c: "The Netherlands", conf: "published", src: "FAS 2026" },
+        { n: "Incirlik AB, Türkiye", lat: 37.0021, lon: 35.4259, r: 3000,
+          c: "Turkey", conf: "published", src: "FAS 2026" },
+        { n: "RAF Lakenheath, UK (mission restored, weapons unconfirmed)",
+          lat: 52.4095, lon: 0.5612, r: 3000, c: "United Kingdom",
+          conf: "approximate", src: "FAS: strong indicator, unconfirmed" }] },
     ] },
-  cn: { name: "China", stock: 600, deployed: 24, kt: 300, mirv: 3,
-    wh: "DF-41 class, estimated 250-500 kt",
-    sites: [
-      { n: "Yumen silo field, Gansu",            lat: 40.42, lon: 97.20, w: 3, k: "silo", r: 40000 },
-      { n: "Hami silo field, Xinjiang",          lat: 41.85, lon: 93.60, w: 3, k: "silo", r: 40000 },
-      { n: "Ordos silo field, Inner Mongolia",   lat: 38.30, lon: 109.20, w: 3, k: "silo", r: 45000 },
-      { n: "Jilantai",                           lat: 39.75, lon: 105.70, w: 1, k: "silo", r: 25000 },
-      { n: "Delingha, Qinghai",                  lat: 37.37, lon: 97.37, w: 2, k: "silo", r: 35000 },
-      { n: "Wuzhai, Shanxi",                     lat: 38.85, lon: 111.60, w: 1, k: "silo", r: 25000 },
-      { n: "South China Sea bastion (Jin-class SSBNs)",
-                                                 lat: 17.5, lon: 114.5, w: 2, k: "sub", r: 300000 },
-      { n: "Neixiang (H-6N bombers)",            lat: 33.13, lon: 112.05, w: 1, k: "bomber" },
+  // United Kingdom: one leg and one warhead. The air-delivered leg ended when
+  // WE.177 was withdrawn in 1998. Missiles are drawn from a pool shared with
+  // the US Navy at Kings Bay, so "how many missiles Britain has" is not a
+  // physically meaningful number; warheads are British and fitted at Coulport.
+  gb: { name: "United Kingdom", abbr: "UK", stock: 225, deployed: 120,
+    note: "One boat is on patrol at all times with about 40 warheads, at "
+      + "several days' notice to fire rather than minutes; the rest are ashore.",
+    systems: [
+      { id: "d5uk", name: "Trident II D5 (Vanguard class)", leg: "sub",
+        launchers: 24, wpl: 5, kt: 100, ktRange: "~100 (Holbrook)", range: 11000,
+        sites: [
+        { n: "Rockall Trough patrol area", lat: 56.53, lon: -10.43, r: 250000,
+          share: 0.7, conf: "assessed",
+          src: "areas classified; survey-limited" },
+        { n: "Northeast Atlantic patrol area", lat: 59, lon: -15, r: 500000,
+          share: 0.3, conf: "assessed", src: "areas classified" }] },
     ] },
-  fr: { name: "France", stock: 290, deployed: 280, kt: 300, mirv: 6,
-    wh: "TN 75 / TNA, roughly 100-300 kt",
-    sites: [
-      { n: "Bay of Biscay approaches (Le Triomphant SSBNs)",
-                                                 lat: 45.5, lon: -12.0, w: 1, k: "sub", r: 320000 },
-      { n: "Northeast Atlantic patrol (Le Triomphant SSBNs)",
-                                                 lat: 52.0, lon: -20.0, w: 1, k: "sub", r: 380000 },
-      { n: "Saint-Dizier AB 113 (Rafale, ASMP-A)", lat: 48.63, lon: 4.90, w: 1, k: "bomber" },
-      { n: "Istres AB 125",                      lat: 43.52, lon: 4.92, w: 1, k: "bomber" },
-      { n: "Avord AB 702",                       lat: 47.05, lon: 2.63, w: 1, k: "bomber" },
+  // France. Figures are as of January 2026 and PRE-INCREASE: on 2 March 2026
+  // Macron announced the first rise since 1992 and ended publication of the
+  // numbers, so 290 is now a floor rather than a count.
+  fr: { name: "France", abbr: "France", stock: 290, deployed: 280,
+    note: "One boat on patrol since 1972 carries about 80 warheads ready in "
+      + "minutes; the air leg is generated over hours as a visible signal.",
+    systems: [
+      { id: "m51", name: "M51 SLBM (Triomphant class)", leg: "sub",
+        launchers: 48, wpl: 5, kt: 150, ktRange: "100-150 (TNO)", range: 9000,
+        sites: [
+        { n: "Northeast Atlantic patrol area, west of Ireland", lat: 49.5,
+          lon: -15, r: 500000, share: 0.6, conf: "assessed", src: "areas classified" },
+        { n: "Bay of Biscay patrol area", lat: 45.5, lon: -6.5, r: 250000,
+          share: 0.4, conf: "assessed", src: "areas classified; historic area" }] },
+      { id: "asmpa", name: "Rafale with ASMP-A cruise missile", leg: "bomber",
+        launchers: 50, wpl: 1, kt: 150, ktRange: "under 300 (TNA)", range: 2000,
+        sites: [
+        { n: "BA 113 Saint-Dizier (the only base with assigned nuclear Rafales)",
+          lat: 48.6360, lon: 4.8994, r: 3000, share: 0.8, conf: "published",
+          src: "FAS 2025" },
+        { n: "BA 125 Istres (missile storage, carrier air wing)", lat: 43.5227,
+          lon: 4.9238, r: 3000, share: 0.2, conf: "published", src: "FAS 2025" }] },
     ] },
-  gb: { name: "United Kingdom", stock: 225, deployed: 120, kt: 100, mirv: 8,
-    wh: "Holbrook, about 100 kt (US W76 derivative)",
-    sites: [
-      { n: "Rockall Trough patrol (Vanguard SSBNs)",
-                                                 lat: 56.5, lon: -14.0, w: 1, k: "sub", r: 300000 },
-      { n: "Iceland-Faroe gap patrol (Vanguard SSBNs)",
-                                                 lat: 62.5, lon: -10.0, w: 1, k: "sub", r: 300000 },
+  // China. FAS Nuclear Notebook 2025/2026, SIPRI 2026, DoD China Military
+  // Power Report, and the satellite work that found the three new silo fields
+  // (Yumen by Middlebury, Hami by FAS, Ordos by CASI in Sentinel-2 imagery).
+  // Only about 34 of the 620 warheads are assessed to be mated to a launcher.
+  cn: { name: "China", abbr: "China", stock: 620, deployed: 34,
+    note: "Warheads are normally held de-mated in central storage, so almost "
+      + "nothing is ready on warning; the three new fields hold 320 silos.",
+    systems: [
+      { id: "df31b", name: "DF-31B (new silo fields)", leg: "silo", launchers: 320,
+        wpl: 0.47, kt: 425, ktRange: "425", range: 11200, sites: [
+        { n: "Yumen silo field, Gansu (120 silos)", lat: 40.1449, lon: 96.5518,
+          r: 19000, share: 0.375, conf: "published", src: "FAS Notebook 2025 Tbl 2" },
+        { n: "Hami silo field, Xinjiang (110 silos)", lat: 42.2806, lon: 92.4959,
+          r: 18000, share: 0.344, conf: "published", src: "FAS Notebook 2025 Tbl 2" },
+        { n: "Yulin/Ordos silo field, Inner Mongolia (90)", lat: 40.1597,
+          lon: 108.1113, r: 16000, share: 0.281, conf: "published",
+          src: "FAS Notebook 2025 Tbl 2" }] },
+      { id: "df5b", name: "DF-5B", leg: "silo", launchers: 12, wpl: 5, kt: 425,
+        ktRange: "425", range: 13000, sites: [
+        { n: "661 Brigade silos, Lushi, Henan", lat: 34.1120, lon: 111.4265,
+          r: 39000, conf: "approximate", src: "Eveleth CNS 2023; coord disputed" },
+        { n: "631 Brigade silos, Jingzhou, Hunan", lat: 26.4175, lon: 109.7060,
+          r: 26000, conf: "approximate", src: "Eveleth CNS 2023 AppA" }] },
+      { id: "df5ac", name: "DF-5A/C", leg: "silo", launchers: 11, wpl: 1, kt: 3000,
+        ktRange: "multi-megatonne", range: 12000, sites: [
+        { n: "633 Brigade silos, Huitong, Hunan", lat: 26.9245, lon: 109.7980,
+          r: 15000, conf: "approximate", src: "Eveleth CNS 2023 AppA" },
+        { n: "662 Brigade silos, Luanchuan, Henan", lat: 33.9400, lon: 112.0610,
+          r: 21000, conf: "approximate", src: "Eveleth CNS 2023 AppA" },
+        { n: "634 Brigade silos, Yueyang, Hunan", lat: 29.5090, lon: 114.1615,
+          r: 48000, conf: "approximate", src: "Eveleth CNS 2023 AppA" }] },
+      { id: "df31ag", name: "DF-31A/AG (road-mobile)", leg: "mobile", launchers: 104,
+        wpl: 1, kt: 425, ktRange: "425", range: 11200, sites: [
+        { n: "642 Brigade area, Datong, Qinghai", lat: 36.9495, lon: 101.6663, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "643 Brigade area, Tianshui, Gansu", lat: 34.5315, lon: 105.9103, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "641 Brigade area, Hancheng, Shaanxi", lat: 35.4754, lon: 110.4468, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "663 Brigade area, Nanyang, Henan", lat: 33.0117, lon: 112.4145, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "664 Brigade area, Xiangyang, Hubei", lat: 31.9443, lon: 112.1197, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "632 Brigade area, Shaoyang, Hunan", lat: 27.2532, lon: 111.3859, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "652 Brigade area, Jilin City", lat: 43.9362, lon: 126.4507, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "622 Brigade area, Yuxi, Yunnan", lat: 24.3601, lon: 102.4942, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" }] },
+      { id: "df41", name: "DF-41 (road-mobile)", leg: "mobile", launchers: 28, wpl: 3,
+        kt: 425, ktRange: "425", range: 12000, sites: [
+        { n: "644 Brigade area, Hanzhong, Shaanxi", lat: 33.1321, lon: 106.9361, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "645 Brigade area, Yinchuan, Ningxia", lat: 38.5919, lon: 106.2266, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" },
+        { n: "651 Brigade area, Chifeng, Inner Mongolia", lat: 42.2574, lon: 118.8249, r: 50000, conf: "assessed", src: "FAS Tbl 2; radius assessed" }] },
+      { id: "df26", name: "DF-26 (dual-capable)", leg: "mobile", launchers: 300,
+        wpl: 0.33, kt: 425, ktRange: "425", range: 4000, sites: [
+        { n: "646 Brigade area, Korla, Xinjiang", lat: 41.6946, lon: 86.1734, r: 50000, conf: "assessed", src: "FAS PLARF tbl; radius assessed" },
+        { n: "625 Brigade area, Jianshui, Yunnan", lat: 23.7354, lon: 102.8713, r: 50000, conf: "assessed", src: "FAS PLARF tbl; radius assessed" },
+        { n: "626 Brigade area, Qingyuan, Guangdong", lat: 23.6845, lon: 113.1768, r: 50000, conf: "assessed", src: "FAS PLARF tbl; radius assessed" },
+        { n: "666 Brigade area, Xinyang, Henan", lat: 32.1675, lon: 114.1257, r: 50000, conf: "assessed", src: "FAS PLARF tbl; radius assessed" }] },
+      { id: "jl3", name: "JL-3 (Type 094 submarines)", leg: "sub", launchers: 72,
+        wpl: 1, kt: 425, ktRange: "425", range: 10000, sites: [
+        { n: "South China Sea bastion patrol area", lat: 17.5, lon: 111.5,
+          r: 300000, conf: "assessed",
+          src: "no polygon published; DoD also cites the Bohai" }] },
+      { id: "h6n", name: "H-6N with air-launched ballistic missile", leg: "bomber",
+        launchers: 20, wpl: 1, kt: 425, ktRange: "425", range: 3100, sites: [
+        { n: "Neixiang air base, Henan (106th Brigade)", lat: 32.9752,
+          lon: 111.8842, r: 3000, conf: "published",
+          src: "airfield published; role assessed" }] },
     ] },
-  in: { name: "India", stock: 172, deployed: 0, kt: 40, mirv: 1,
-    wh: "estimated 12-40 kt fission/boosted; Agni-V possibly larger",
-    sites: [
-      { n: "Ambala area (air base)",             lat: 30.37, lon: 76.82, w: 1, k: "bomber" },
-      { n: "Gwalior area (air base)",            lat: 26.29, lon: 78.23, w: 1, k: "bomber" },
-      { n: "Jodhpur area (missile group)",       lat: 26.25, lon: 73.05, w: 1, k: "silo" },
-      { n: "Secunderabad area (missile group)",  lat: 17.44, lon: 78.50, w: 2, k: "silo" },
-      { n: "Bay of Bengal patrol area (Arihant SSBNs)",
-                                                 lat: 15.0, lon: 87.0, w: 1, k: "sub", r: 250000 },
+  // India. No Indian missile garrison coordinate is published anywhere, so
+  // the land-based systems get assessed dispersal areas centred on the towns
+  // open reporting associates with them, marked as this app's construction.
+  in: { name: "India", abbr: "India", stock: 190, deployed: 12,
+    note: "Warheads are held de-mated under civilian custody; only about a "
+      + "dozen at sea are assessed to be mated, and only when a boat sails.",
+    systems: [
+      { id: "agniShort", name: "Prithvi-II, Agni-I and Agni-II", leg: "mobile",
+        launchers: 56, wpl: 1, kt: 20, ktRange: "10-40", range: 2000, sites: [
+        { n: "Missile group area, Secunderabad", lat: 17.44, lon: 78.50, r: 60000,
+          conf: "assessed", src: "no garrison coordinate is published" },
+        { n: "Missile group area, Jodhpur", lat: 26.25, lon: 73.05, r: 60000,
+          conf: "assessed", src: "no garrison coordinate is published" }] },
+      { id: "agniLong", name: "Agni-III, Agni-IV and Agni-V", leg: "mobile",
+        launchers: 32, wpl: 1.5, kt: 25, ktRange: "10-40", range: 5000, sites: [
+        { n: "Missile group area, central India", lat: 23.2, lon: 79.0, r: 120000,
+          conf: "assessed", src: "no garrison coordinate is published" }] },
+      { id: "k15", name: "K-15 (Arihant class)", leg: "sub", launchers: 4, wpl: 3,
+        kt: 12, ktRange: "12", range: 700, sites: [
+        { n: "Bay of Bengal patrol area", lat: 15, lon: 85, r: 300000,
+          conf: "assessed", src: "no box published; port is INS Varsha" }] },
+      { id: "inair", name: "Mirage 2000H and Jaguar IS", leg: "bomber",
+        launchers: 48, wpl: 1, kt: 12, ktRange: "12", range: 1800, sites: [
+        { n: "Maharajpur air base, Gwalior", lat: 26.2933, lon: 78.2278, r: 3000,
+          conf: "published", src: "airfield published; role per FAS" },
+        { n: "Ambala air base", lat: 30.3681, lon: 76.8167, r: 3000,
+          conf: "published", src: "airfield published; role per FAS" },
+        { n: "Gorakhpur air base", lat: 26.7397, lon: 83.4497, r: 3000,
+          conf: "published", src: "airfield published; role per FAS" }] },
     ] },
-  pk: { name: "Pakistan", stock: 170, deployed: 0, kt: 40, mirv: 1,
-    wh: "estimated 5-40 kt",
-    sites: [
-      { n: "Sargodha / Kirana Hills",            lat: 32.05, lon: 72.67, w: 3, k: "silo" },
-      { n: "Akro, Petaro",                       lat: 25.30, lon: 68.30, w: 1, k: "silo" },
-      { n: "Gujranwala area",                    lat: 32.18, lon: 74.19, w: 1, k: "silo" },
-      { n: "Pano Aqil",                          lat: 27.85, lon: 69.10, w: 1, k: "silo" },
-      { n: "Masroor AB, Karachi",                lat: 24.89, lon: 66.94, w: 1, k: "bomber" },
-      { n: "Khuzdar area",                       lat: 27.80, lon: 66.60, w: 1, k: "silo" },
+  // Pakistan. Warheads are kept apart from launchers and reportedly assembled
+  // at the last moment from parts held at separate sites.
+  pk: { name: "Pakistan", abbr: "Pakistan", stock: 170, deployed: 0,
+    note: "Nothing is mated in peacetime: warheads are stored in pieces at "
+      + "separate sites and would be assembled during a crisis.",
+    systems: [
+      { id: "pkShort", name: "Abdali, Ghaznavi, Nasr and Babur", leg: "mobile",
+        launchers: 62, wpl: 1, kt: 8, ktRange: "sub-kilotonne to 12", range: 350,
+        sites: [
+        { n: "Pano Aqil garrison, Sindh", lat: 27.8328, lon: 69.1575, r: 15000,
+          conf: "published", src: "FAS Pakistan infrastructure report" },
+        { n: "Gujranwala garrison, Punjab", lat: 32.2410, lon: 74.0730, r: 15000,
+          conf: "published", src: "FAS Pakistan infrastructure report" },
+        { n: "Akro garrison, Sindh", lat: 25.5483, lon: 68.3343, r: 15000,
+          conf: "published", src: "FAS Pakistan infrastructure report" }] },
+      { id: "shaheen", name: "Shaheen-I/II and Ghauri", leg: "mobile",
+        launchers: 64, wpl: 1, kt: 25, ktRange: "10-40", range: 2000, sites: [
+        { n: "Sargodha garrison, Kirana Hills", lat: 31.9722, lon: 72.6838,
+          r: 15000, conf: "published", src: "FAS Pakistan infrastructure report" },
+        { n: "Khuzdar garrison, Balochistan", lat: 27.7222, lon: 66.6241,
+          r: 15000, conf: "published", src: "FAS Pakistan infrastructure report" }] },
+      { id: "pkair", name: "Mirage III/V with Ra'ad cruise missile", leg: "bomber",
+        launchers: 36, wpl: 1, kt: 8, ktRange: "5-12", range: 2100, sites: [
+        { n: "Masroor air base, Karachi", lat: 24.8855, lon: 66.9280, r: 3000,
+          conf: "published", src: "FAS Pakistan infrastructure report" },
+        { n: "Rafiqui air base, Shorkot", lat: 30.7580, lon: 72.2822, r: 3000,
+          conf: "published", src: "FAS Pakistan infrastructure report" }] },
     ] },
-  il: { name: "Israel", stock: 90, deployed: 0, kt: 60, mirv: 1,
-    wh: "undeclared; open estimates put it in the tens of kilotons",
-    sites: [
-      { n: "Sdot Micha (Jericho missile base)",  lat: 31.72, lon: 34.92, w: 3, k: "silo" },
-      { n: "Tel Nof AB",                         lat: 31.84, lon: 34.82, w: 1, k: "bomber" },
-      { n: "Eastern Mediterranean patrol (Dolphin-class)",
-                                                 lat: 33.5, lon: 31.5, w: 1, k: "sub", r: 200000 },
+  // Israel neither confirms nor denies. Every number is an outside estimate,
+  // and the yields are placeholders: no public source gives a per-system one.
+  il: { name: "Israel", abbr: "Israel", stock: 90, deployed: 0,
+    note: "Undeclared. Warheads are assumed stored partly unassembled with "
+      + "the cores held separately, so none are ready to fly.",
+    systems: [
+      { id: "jericho", name: "Jericho II/III", leg: "mobile", launchers: 50,
+        wpl: 1, kt: 200, ktRange: "150-400, unconfirmed", range: 4000, sites: [
+        { n: "Sdot Micha missile base (Zachariah)", lat: 31.7386, lon: 34.9194,
+          r: 8000, conf: "published", src: "two independent sources agree" }] },
+      { id: "popeye", name: "Popeye Turbo cruise missile (Dolphin class)",
+        leg: "sub", launchers: 20, wpl: 0.5, kt: 20, ktRange: "not assessed",
+        range: 1500, sites: [
+        { n: "Eastern Mediterranean patrol area", lat: 33, lon: 32.5, r: 250000,
+          conf: "assessed", src: "no area published; port is Haifa" }] },
+      { id: "ilair", name: "F-15 and F-16I with gravity bombs", leg: "bomber",
+        launchers: 50, wpl: 0.6, kt: 20, ktRange: "not assessed", range: 1600,
+        sites: [
+        { n: "Tel Nof air base", lat: 31.8395, lon: 34.8218, r: 3000,
+          conf: "published", src: "SIPRI names a likely bomb store" },
+        { n: "Hatzerim air base", lat: 31.2334, lon: 34.6626, r: 3000,
+          conf: "published", src: "SIPRI names a likely bomb store" }] },
     ] },
-  kp: { name: "North Korea", stock: 50, deployed: 0, kt: 50, mirv: 1,
-    wh: "estimated; the 2017 test measured 140-250 kt, a deliverable warhead less",
-    sites: [
-      { n: "Sino-ri missile base",               lat: 39.65, lon: 125.42, w: 1, k: "silo" },
-      { n: "Sangnam-ni (Hoejung-ni)",            lat: 39.78, lon: 126.42, w: 1, k: "silo" },
-      { n: "Yeongjeo-dong",                      lat: 41.65, lon: 128.15, w: 1, k: "silo" },
-      { n: "Sohae, Tongchang-ri",                lat: 39.66, lon: 124.71, w: 1, k: "silo" },
+  // North Korea. No public source allocates warheads to systems or publishes
+  // ICBM launcher counts, so the launcher numbers are this app's own
+  // apportionment of ~60 assembled warheads across the bases CSIS has located.
+  kp: { name: "North Korea", abbr: "N. Korea", stock: 60, deployed: 0,
+    note: "About 60 assembled warheads, all in central storage and none mated "
+      + "to a missile; there is fissile material for at least 90.",
+    systems: [
+      { id: "hs15", name: "Hwasong-15/17/18 (intercontinental)", leg: "mobile",
+        launchers: 12, wpl: 1, kt: 15, ktRange: "10-20; the 2017 test 70-400",
+        range: 13000, sites: [
+        { n: "Sinpung-dong missile operating base", lat: 40.3163, lon: 125.2765, r: 8000, conf: "published", src: "CSIS Beyond Parallel" },
+        { n: "Yusang-ni missile operating base", lat: 39.4499, lon: 126.2597, r: 8000, conf: "published", src: "CSIS Beyond Parallel" },
+        { n: "Hoejung-ni missile operating base", lat: 41.3699, lon: 126.9136, r: 8000, conf: "published", src: "CSIS Beyond Parallel" },
+        { n: "Yongnim missile operating base", lat: 40.4833, lon: 126.5018, r: 8000, conf: "published", src: "CSIS Beyond Parallel" }] },
+      { id: "hs12", name: "Hwasong-12 (intermediate range)", leg: "mobile",
+        launchers: 12, wpl: 1, kt: 15, ktRange: "10-20", range: 4500, sites: [
+        { n: "Sangnam-ni missile operating base", lat: 40.8390, lon: 128.5417, r: 8000, conf: "published", src: "CSIS Beyond Parallel" },
+        { n: "Yeongjeo-dong missile operating base", lat: 41.3561, lon: 127.0610, r: 8000, conf: "published", src: "CSIS Beyond Parallel" }] },
+      { id: "nodong", name: "Hwasong-7 and Scud variants", leg: "mobile",
+        launchers: 36, wpl: 1, kt: 15, ktRange: "10-20", range: 1400, sites: [
+        { n: "Sino-ri missile operating base", lat: 39.6449, lon: 125.3553, r: 8000, conf: "published", src: "CSIS Beyond Parallel" },
+        { n: "Kumchon-ni missile operating base", lat: 38.9581, lon: 127.5489, r: 8000, conf: "approximate", src: "CSIS; two conflicting values" },
+        { n: "Kal-gol missile operating base", lat: 38.6743, lon: 126.7277, r: 8000, conf: "published", src: "CSIS Beyond Parallel" },
+        { n: "Sakkanmol missile operating base", lat: 38.5847, lon: 126.1079, r: 8000, conf: "published", src: "CSIS Beyond Parallel" }] },
     ] },
 };
 
@@ -3872,19 +4156,29 @@ requestAnimationFrame(tick);
 // the user has already flown more than 2 km away.
 let cityAbort = null, cityTimer = null;
 
-// Cached city list: the 5,000 most populous cities (GeoNames-derived,
-// population-sorted, name/country/coords), fetched once. Both search boxes
+// Cached city list (GeoNames, population-sorted, fetched once). Both search boxes
 // answer from it INSTANTLY, ranked by population because the file is; the
 // debounced Nominatim query then fills in everything the cache cannot know
 // (small towns, addresses), deduped against the local rows.
 let CITY_DB = null, CITY_KEYS = null, COUNTRY_DB = null, COUNTRY_KEYS = null;
 const cityFold = s => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+// cities.json v2: EVERY GeoNames place of 15,000 people or more, 34,100 of
+// them across all 244 countries, each [name, countryIndex, lat, lon,
+// population/100], population-descending. v1 held only the top 5,000
+// worldwide, which silently truncated whole countries (Canada had 57 cities,
+// Australia 18, and 76 countries had none at all) and left the exchange
+// stacking warheads on a handful of metros for want of anywhere else to put
+// them. The country index replaces a repeated name string, and the divided
+// population keeps the file to 533 KB gzipped.
 fetch("cities.json").then(r => r.ok ? r.json() : null).then(j => {
   if (!j) return;
-  CITY_DB = j.cities;
-  CITY_KEYS = CITY_DB.map(c => cityFold(c[0]));
   COUNTRY_DB = j.countries || [];
   COUNTRY_KEYS = COUNTRY_DB.map(c => cityFold(c[0]));
+  // one pass to the shape the rest of the code reads: [name, countryName,
+  // lat, lon, population]
+  CITY_DB = j.cities.map(c => [c[0], (COUNTRY_DB[c[1]] || [""])[0], c[2], c[3],
+                               (c[4] || 0) * 100]);
+  CITY_KEYS = CITY_DB.map(c => cityFold(c[0]));
 }).catch(() => {});
 // is edit distance <= k (small k, early row-min exit). Transpositions count
 // as ONE edit (optimal string alignment), because swapped letters are the
@@ -3938,8 +4232,8 @@ function localCities(q, n = 5) {
     return { idx: i, lat: c[2], lon: c[3], name: c[0], label: c[0] + ", " + c[1] }; });
 }
 // A country match expands to that country's most populous cities in
-// descending order (the scan order); a country with no city in the top
-// 5,000 (Iceland) falls back to its capital row from the countries table.
+// descending order (the scan order); a country with no city on file at all
+// falls back to its capital row from the countries table.
 // At most two countries share the list ("united" shows both US and UK).
 function countryRows(q, n, allowFuzzy) {
   if (!COUNTRY_DB) return [];
@@ -4351,6 +4645,9 @@ const EX_REENTRY = 100000;     // m: altitude where the air starts to matter
 // itself: a silo field or a mobile-launcher area covers a lot of ground, an
 // air base is one runway
 const EX_FIELD = { silo: 55000, bomber: 3000, sub: 400000 };
+// how far apart one missile's warheads may land: the post-boost vehicle's
+// footprint, a few hundred km along the flight path and less across it
+const EX_FOOTPRINT = 400000;
 
 // deterministic pseudo-random (a run must repeat exactly for the tests)
 function exRand(seed) {
@@ -4546,7 +4843,7 @@ function exPlan(n, countries, rnd) {
   const aims = [];
   const set = new Set(countries);
   for (const p of Object.values(NUKE_POWERS))
-    for (const s of p.sites) {
+    for (const s of exPowerSites(p)) {
       if (s.k === "sub") continue;               // a boat at sea is not a target
       if (!set.has(s.c || p.name)) continue;
       for (let i = 0; i < 2 && aims.length < n; i++)
@@ -4586,47 +4883,202 @@ function exCount(P, mode) {
   return mode === "stock" ? P.stock : (P.deployed || P.stock);
 }
 
+/* A power's launch sites, flattened out of its delivery SYSTEMS. Each system
+ * (Minuteman III, Trident II, Yars, DF-41 ...) knows how many launchers it
+ * has, how many warheads each carries in practice, what those warheads yield
+ * and where they are based, so the site inherits all of it rather than the
+ * whole country sharing one number. A power that still carries the older flat
+ * `sites` list keeps working, so the data can be replaced country by country. */
+function exPowerSites(P) {
+  if (P._sites) return P._sites;
+  let out;
+  if (P.systems) {
+    out = [];
+    for (const sy of P.systems) {
+      const wh = (sy.launchers || 0) * (sy.wpl || 1);
+      const per = wh / Math.max(1, sy.sites.length);
+      for (const st of sy.sites)
+        out.push({ ...st,
+          // a road-mobile launcher fires from land like a silo; what makes it
+          // different is the radius it disperses over, which the site carries
+          k: sy.leg === "mobile" ? "silo" : sy.leg,
+          kt: sy.kt, mirv: Math.max(1, Math.round(sy.wpl || 1)),
+          sys: sy.name, wh: st.share != null ? wh * st.share : per });
+    }
+  } else {
+    const tot = P.sites.reduce((a, s) => a + (s.w || 1), 0) || 1;
+    out = P.sites.map(s => ({ ...s, kt: P.kt, mirv: P.mirv, sys: null,
+                              wh: (P.deployed || P.stock) * (s.w || 1) / tot }));
+  }
+  P._sites = out;
+  return out;
+}
+
+// One or more powers firing together. A bloc's launch sites are the union of
+// its members' sites, each tagged with the owner so it keeps that country's
+// warhead type and missile loading; the salvo is the sum of their counts.
+// A single country is just a coalition of one, so everything downstream sees
+// the same shape.
+function exForce(keys, mode, label) {
+  const list = (Array.isArray(keys) ? keys : [keys]).filter(k => NUKE_POWERS[k]);
+  if (!list.length) return null;
+  const sites = [], legs = {};
+  let n = 0, stock = 0, deployed = 0, maxKt = 0;
+  for (const k of list) {
+    const P = NUKE_POWERS[k];
+    const share = exCount(P, mode);
+    n += share; stock += P.stock; deployed += P.deployed;
+    for (const st of exPowerSites(P)) maxKt = Math.max(maxKt, st.kt || 0);
+    for (const st of exPowerSites(P)) {
+      // A site's pull is the number of MISSILES it launches, not warheads:
+      // the pool hands out missiles, so a British boat firing eight warheads
+      // apiece needs an eighth of the draws to deliver the same number.
+      sites.push({ ...st, owner: k,
+                   pull: (st.wh || 1) / Math.max(1, st.mirv || 1) });
+      legs[st.k] = (legs[st.k] || 0) + 1;
+    }
+  }
+  const one = list.length === 1 ? NUKE_POWERS[list[0]] : null;
+  // the arsenal's typical warhead, weighted by how many of each fly
+  let ktSum = 0, whSum = 0;
+  for (const st of sites) { ktSum += (st.kt || 0) * (st.wh || 0); whSum += st.wh || 0; }
+  const ktAvg = whSum ? ktSum / whSum : 100;
+  return { keys: list, sites, n, stock, deployed, maxKt, legs,
+           name: label || (one ? one.name : list.map(k => NUKE_POWERS[k].name).join(" + ")),
+           blocOf: label ? list.map(k => NUKE_POWERS[k].name) : null,
+           kt: Math.round(ktAvg), ktAvg,
+           mirv: Math.max(1, Math.round(sites.reduce((a, st) =>
+             a + (st.mirv || 1) * (st.wh || 0), 0) / (whSum || 1))),
+           wh: one ? one.wh : list.map(k => NUKE_POWERS[k].name).join(", ") };
+}
+
+// Hilbert index of a lat/lon, used to put aim points in an order where
+// neighbours in the list are neighbours on the ground. Warheads are handed
+// out in contiguous runs, so this is what keeps one missile's warheads
+// inside a footprint it could actually reach.
+function exHilbert(lat, lon, order = 10) {
+  const N = 1 << order;
+  let x = Math.min(N - 1, Math.max(0, Math.floor((lon + 180) / 360 * N)));
+  let y = Math.min(N - 1, Math.max(0, Math.floor((lat + 90) / 180 * N)));
+  let rx, ry, d = 0;
+  for (let s = N / 2; s > 0; s /= 2) {
+    rx = (x & s) > 0 ? 1 : 0;
+    ry = (y & s) > 0 ? 1 : 0;
+    d += s * s * ((3 * rx) ^ ry);
+    if (ry === 0) {
+      if (rx === 1) { x = s - 1 - x; y = s - 1 - y; }
+      const t = x; x = y; y = t;
+    }
+  }
+  return d;
+}
+
 function exBuild(srcKey, countries, mode) {
-  const P = NUKE_POWERS[srcKey];
+  const bloc = NUKE_BLOCS[srcKey];
+  const F = exForce(bloc ? bloc.fire : srcKey, mode, bloc ? bloc.name : null);
+  if (!F) return { error: "No such launching power." };
+  const P = F;                          // downstream reads the force
   const rnd = exRand(0x5eed);
-  const n = exCount(P, mode);
+  const n = F.n;
   const { aims, cities, alloc } = exPlan(n, countries, rnd);
   if (!aims.length) return { error: "Nothing to aim at in the chosen countries." };
+  // A MIRVed missile does not scatter its warheads across a continent. The
+  // bus releases them one at a time, nudging between releases, and what that
+  // little thruster can buy is a FOOTPRINT a few hundred kilometres long:
+  // cheap along the flight path (a metre per second of extra burnout speed
+  // moves the impact about six kilometres at intercontinental range), dear
+  // across it. So the aim points are walked in Hilbert order and handed out
+  // in contiguous runs of one missile's load, which keeps each bus's targets
+  // together. Before this, consecutive warheads from one silo went to
+  // arbitrarily distant cities, which no post-boost vehicle could do.
+  aims.sort((a, b) => exHilbert(a.lat, a.lon) - exHilbert(b.lat, b.lon));
   // sites, expanded by weight: a three-field division launches three times
   // what a single bomber base does
-  const pool = [];
-  P.sites.forEach((s, i) => { for (let k = 0; k < s.w; k++) pool.push(i); });
+  // Who fires what. Each power delivers exactly its own count of warheads,
+  // so a coalition's mix comes out right no matter how the footprint rule
+  // truncates individual missile loads. Powers are interleaved by smooth
+  // weighted round robin rather than drained one at a time, so a bloc's
+  // salvo is mixed across the whole target set instead of each member
+  // taking one geographic slice.
+  const quota = {}, credit = {}, sitePool = {};
+  let quotaLeft = 0;
+  for (const k of F.keys) {
+    quota[k] = exCount(NUKE_POWERS[k], mode);
+    credit[k] = 0; quotaLeft += quota[k];
+    // each site appears in its country's pool in proportion to the missiles
+    // it actually fields, so the salvo comes off the right launchers
+    const pool = [];
+    const mine = F.sites.map((st, i) => [st, i]).filter(([st]) => st.owner === k);
+    const tot = mine.reduce((a, [st]) => a + st.pull, 0) || 1;
+    const slots = Math.max(mine.length, Math.min(3000, Math.ceil(quota[k])));
+    for (const [st, i] of mine) {
+      const c = Math.max(1, Math.round(slots * st.pull / tot));
+      for (let j = 0; j < c; j++) pool.push(i);
+    }
+    for (let i = pool.length - 1; i > 0; i--) {      // deterministic shuffle
+      const j = Math.floor(rnd() * (i + 1));
+      const t = pool[i]; pool[i] = pool[j]; pool[j] = t;
+    }
+    sitePool[k] = { pool, at: 0 };
+  }
+  const totalQuota = quotaLeft;
+  const nextPower = () => {
+    let best = null;
+    for (const k of F.keys) {
+      if (quota[k] <= 0) continue;
+      credit[k] += quota[k];
+      if (best === null || credit[k] > credit[best]) best = k;
+    }
+    if (best !== null) credit[best] -= totalQuota;
+    return best;
+  };
+
   const shots = [];
-  aims.forEach((aim, i) => {
-    const si = pool[i % pool.length];
-    const st = P.sites[si];
-    // a submarine is not at its home port: it is somewhere in a patrol box,
-    // and every boat is somewhere different, so each launch point is drawn
-    // from inside that box (deterministically, so a run repeats)
-    // Nothing launches from a single point. A missile wing's silos are
-    // scattered over thousands of square kilometres of farmland (Malmstrom's
-    // reach ~85 km, Minot's ~65, the Chinese fields ~35), mobile launchers
-    // disperse into the countryside, and a submarine is somewhere in a patrol
-    // box. Only an air base is genuinely one place.
-    const rad = st.r != null ? st.r : EX_FIELD[st.k] || 0;
-    let pl;
-    if (rad > 0) {
-      const [lo, la] = destPoint(st.lat, st.lon, rnd() * 360, rad * Math.sqrt(rnd()));
-      pl = [la, lo, st.k === "sub" ? 0 : (terrainAt(la, lo) ?? 0)];
-    } else pl = [st.lat, st.lon, terrainAt(st.lat, st.lon) ?? 0];
+  // Nothing launches from a single point. A missile wing's silos are
+  // scattered over thousands of square kilometres of farmland (Malmstrom's
+  // reach ~85 km, Minot's ~65, the Chinese fields ~35), mobile launchers
+  // disperse into the countryside, and a submarine is somewhere in a patrol
+  // box. Only an air base is genuinely one place. Each MISSILE gets one
+  // launch point, shared by every warhead it carries.
+  let missile = -1, pad = null, si = 0, st = null, owner = null;
+  let loaded = 0, first = null;
+  for (const aim of aims) {
+    // a new missile when this one is full, OR when the next aim point falls
+    // outside the footprint the bus could reach from the ones already on
+    // board. The Hilbert order keeps neighbours together but the curve makes
+    // occasional long jumps, and without this check a single bus was handed
+    // targets four thousand kilometres apart.
+    const tooFar = first &&
+      surfDist(first.lat, first.lon, aim.lat, aim.lon) > EX_FOOTPRINT;
+    if (missile < 0 || loaded >= Math.max(1, st.mirv) || tooFar) {
+      const k = nextPower();
+      if (k === null) break;                  // every warhead is allocated
+      owner = k;
+      const sp = sitePool[k];
+      si = sp.pool[sp.at++ % sp.pool.length];
+      st = F.sites[si];
+      missile++; loaded = 0; first = aim;
+      const rad = st.r != null ? st.r : EX_FIELD[st.k] || 0;
+      if (rad > 0) {
+        const [lo, la] = destPoint(st.lat, st.lon, rnd() * 360, rad * Math.sqrt(rnd()));
+        pad = [la, lo, st.k === "sub" ? 0 : (terrainAt(la, lo) ?? 0)];
+      } else pad = [st.lat, st.lon, terrainAt(st.lat, st.lon) ?? 0];
+    }
+    loaded++; quota[owner]--;
     // several warheads on one aim point land as a pattern across it, not on
     // the same square metre; a single one lands on the point
-    const [la, lo] = aim.k === "city" ? exOffset(aim.lat, aim.lon, aim.idx)
-                   : aim.idx ? exOffset(aim.lat, aim.lon, aim.idx) : [aim.lat, aim.lon];
-    shots.push({ si, kind: st.k, city: aim.city, aimKind: aim.k,
-                 name: aim.name, lat: la, lon: lo, pad: pl });
-  });
+    const [la, lo] = aim.idx ? exOffset(aim.lat, aim.lon, aim.idx)
+                             : [aim.lat, aim.lon];
+    shots.push({ si, kind: st.k, owner, city: aim.city, aimKind: aim.k,
+                 kt: st.kt, missile, cap: Math.max(1, st.mirv || 1),
+                 sys: st.sys, name: aim.name, lat: la, lon: lo, pad });
+  }
   // Everything leaves at once (RW's ruling): a real salvo takes minutes to
   // empty the fields, but the interesting picture is the whole force in the
   // air together, and it makes the arrival order pure geometry.
   let failed = 0;
   for (const sh of shots) {
-    const st = P.sites[sh.si];
+    const st = F.sites[sh.si];
     const aimLL = [sh.lat, sh.lon, 0];
     sh.f = st.k === "bomber" ? exAirFlight(sh.pad, aimLL)
                              : exShotFlight(st, sh.pad, aimLL);
@@ -4635,11 +5087,13 @@ function exBuild(srcKey, countries, mode) {
   const live = shots.filter(s => s.f);
   const bal = live.filter(s => s.f.kind === "bal");
   const kinds = { cf: 0, city: 0, disp: 0 };
-  for (const s of live) kinds[s.aimKind]++;
+  let maxKt = 0;
+  for (const s of live) { kinds[s.aimKind]++; maxKt = Math.max(maxKt, s.kt); }
   return { power: P, key: srcKey, countries, cities, alloc, shots: live, kinds,
-           mode: mode || "deployed", n,
+           mode: mode || "deployed", n, maxKt,
            dropped: failed, t: 0, hit: 0, running: false,
            lastImpact: -99, pending: [], crosses: [],
+           force: F,
            legs: { silo: live.filter(s => s.kind === "silo").length,
                    sub: live.filter(s => s.kind === "sub").length,
                    bomber: live.filter(s => s.kind === "bomber").length },
@@ -4652,7 +5106,9 @@ function exBuild(srcKey, countries, mode) {
 function exchangeStart() {
   const src = $("nukeSrc").value;
   const chosen = [...nukeSel];
-  if (!chosen.length || !NUKE_POWERS[src]) return;
+  // the source may be a single power OR a bloc; requiring a power here made
+  // every bloc launch a silent no-op
+  if (!chosen.length || !(NUKE_POWERS[src] || NUKE_BLOCS[src])) return;
   clearRun();
   const t0 = performance.now();
   const e = exBuild(src, chosen, $("nukeCount").value);
@@ -4664,10 +5120,12 @@ function exchangeStart() {
   launchEpoch = wallMs;
   simStatus = "flying";
   setPauseUi();
-  // the damage field: one warhead type per shooter, so every burst shares
-  // these four radii and the shader only has to store centres
-  const r = blastRadii(e.power.kt);
-  globe.setZoneField([r.heavy, r.severe, r.burns, r.light],
+  // the damage field: the four band radii for a ONE KILOTONNE burst, with
+  // every impact scaled from them by its own warhead's yield, because a
+  // salvo mixes types and an 8 kt W76-2 does not make the same hole as an
+  // 800 kt Voevoda
+  const r1 = blastRadii(1);
+  globe.setZoneField([r1.heavy, r1.severe, r1.burns, r1.light],
     [ZONE_COLORS.heavy, ZONE_COLORS.severe, ZONE_COLORS.burns, ZONE_COLORS.light]);
   // the launch points as they actually are: every silo and air base at its
   // own spot, and every submarine wherever in its patrol box it turned out
@@ -4731,7 +5189,7 @@ function exchangeStep(realDt) {
   if (landed.length) {
     e.hit += landed.length;
     for (const s of landed) {
-      e.pending.push([s.lat, s.lon]);
+      e.pending.push([s.lat, s.lon, s.kt]);
       e.crosses.push(s.lat, s.lon, (terrainAt(s.lat, s.lon) ?? 0) + GROUND_LIFT);
     }
     // batch the field rebuild: a wave can land hundreds of warheads in one
@@ -4760,9 +5218,10 @@ function exchangeStep(realDt) {
 // in when you are close and shrinks to a dot instead of merging into a red
 // mass when you are looking at a continent.
 function exchangeMarks(e) {
-  const r = blastRadii(e.power.kt);
+  // sized off the heavy-blast ring of the biggest warhead in the field
+  const kt = e.maxKt || e.power.kt;
   globe.setPoints("exHit", e.crosses, [0.898, 0.243, 0.243, 0.95], 3, 1,
-                  r.heavy, 15);
+                  blastRadii(kt).heavy, 15);
 }
 
 function exchangeFinish() {
@@ -4834,27 +5293,48 @@ let nukeTimer = null;
 function nukeFill() {
   const sel = $("nukeSrc");
   if (sel.options.length) return;
-  for (const [k, p] of Object.entries(NUKE_POWERS)) {
-    const o = document.createElement("option");
-    o.value = k;
-    o.textContent = `${p.name} (${p.stock.toLocaleString()} warheads)`;
-    sel.appendChild(o);
-  }
+  const grp = (label, entries) => {
+    const g = document.createElement("optgroup");
+    g.label = label;
+    for (const [v, t] of entries) {
+      const o = document.createElement("option");
+      o.value = v; o.textContent = t;
+      g.appendChild(o);
+    }
+    sel.appendChild(g);
+  };
+  grp("One country", Object.entries(NUKE_POWERS).map(([k, p]) =>
+    [k, `${p.name} (${p.stock.toLocaleString()} warheads)`]));
+  // a bloc fires only what its members actually own: NATO shoots American,
+  // British and French weapons and nobody else in it has any
+  grp("Together", Object.entries(NUKE_BLOCS).filter(([, b]) => b.fire.length)
+    .map(([k, b]) => {
+      const n = b.fire.reduce((a, x) => a + NUKE_POWERS[x].stock, 0);
+      return [k, `${b.name}: ${b.fire.map(x => NUKE_POWERS[x].abbr
+                 || NUKE_POWERS[x].name).join(" + ")} (${n.toLocaleString()})`];
+    }));
   sel.value = "ru";
 }
 function nukeSrcNote() {
-  const p = NUKE_POWERS[$("nukeSrc").value];
-  if (!p) return;
-  const mode = $("nukeCount").value;
-  const n = exCount(p, mode);
+  const key = $("nukeSrc").value, mode = $("nukeCount").value;
+  const bloc = NUKE_BLOCS[key];
+  const F = exForce(bloc ? bloc.fire : key, mode, bloc ? bloc.name : null);
+  if (!F) return;
   const legs = {};
-  for (const s of p.sites) legs[s.k] = (legs[s.k] || 0) + 1;
+  for (const s of F.sites) legs[s.k] = (legs[s.k] || 0) + 1;
+  const one = F.keys.length === 1 ? NUKE_POWERS[F.keys[0]] : null;
   $("nukeSrcNote").innerHTML =
-    `<b>${n.toLocaleString()} warheads fly.</b> ${p.stock.toLocaleString()} in the `
-    + `stockpile, ${p.deployed ? p.deployed.toLocaleString() + " deployed on missiles"
-        : "none kept mated to a missile, so “deployed” falls back to the stockpile"}. `
-    + `Warhead: ${p.wh}. Launch sites: ${legs.silo || 0} land, ${legs.sub || 0} patrol `
-    + `areas, ${legs.bomber || 0} air, about ${p.mirv} warheads per missile.`;
+    `<b>${F.n.toLocaleString()} warheads fly.</b> `
+    + (one
+        ? `${one.stock.toLocaleString()} in the stockpile, `
+          + (one.deployed ? one.deployed.toLocaleString() + " deployed on missiles"
+             : "none kept mated to a missile, so “deployed” falls back to the "
+               + "stockpile")
+          + `. Warhead: ${one.wh}. `
+        : F.keys.map(k => `${NUKE_POWERS[k].name} ${exCount(NUKE_POWERS[k], mode)
+            .toLocaleString()} at ${NUKE_POWERS[k].kt} kt`).join("; ") + ". ")
+    + `Launch sites: ${legs.silo || 0} land, ${legs.sub || 0} patrol areas, `
+    + `${legs.bomber || 0} air.`;
 }
 function nukeChips() {
   const box = $("nukeChips");
@@ -4869,9 +5349,12 @@ function nukeChips() {
   }
 }
 function nukePlan() {
-  const p = NUKE_POWERS[$("nukeSrc").value];
+  const key = $("nukeSrc").value, bloc = NUKE_BLOCS[key];
+  const F = exForce(bloc ? bloc.fire : key, $("nukeCount").value,
+                    bloc ? bloc.name : null);
+  if (!F) return;
   const list = [...nukeSel];
-  const n = exCount(p, $("nukeCount").value);
+  const n = F.n;
   const { aims, cities, alloc } = exPlan(n, list, exRand(0x5eed));
   const go = $("nukeGo");
   go.disabled = !aims.length;
@@ -4931,10 +5414,43 @@ const COUNTRY_ALIAS = {
   mx: "Mexico", ca: "Canada", au: "Australia", za: "South Africa",
   vatican: "Vatican City", "the netherlands": "Netherlands",
 };
+// The blocs, offered as rows. They are shown the moment the box is focused
+// with nothing typed, because nobody searches for a thing they do not know
+// is there (RW); picking one drops every member in as its own chip, so
+// individual countries can still be taken back out.
+function nukeBlocRows(q, exactOnly) {
+  const box = $("nukeCountryResults");
+  const s = cityFold(q || "");
+  const hits = Object.entries(NUKE_BLOCS).filter(([, b]) => {
+    if (!s) return true;                              // focused, nothing typed
+    // an exact alias ("nato", "eu") leads; a mere prefix ("us" against "US
+    // Pacific allies") must not outrank the country of the same name
+    if (b.aka.includes(s)) return true;
+    return !exactOnly && (b.aka.some(a => a.startsWith(s))
+                          || cityFold(b.name).startsWith(s));
+  });
+  for (const [, b] of hits) {
+    if (box.querySelector(`[data-bloc="${b.name}"]`)) continue;
+    const row = document.createElement("div");
+    row.className = "blocRow";
+    row.dataset.bloc = b.name;
+    row.innerHTML = `<b>${b.name}</b> <span class="hint">`
+      + `${b.members.length} countries</span>`;
+    row.onclick = () => {
+      for (const m of b.members) nukeSel.add(m);
+      $("nukeCountry").value = ""; box.innerHTML = "";
+      nukeChips(); nukePlan();
+    };
+    box.appendChild(row);
+  }
+  return hits.length;
+}
 function nukeCountryRows(q) {
   const box = $("nukeCountryResults");
   box.innerHTML = "";
-  if (!COUNTRY_DB || q.length < 1) return;
+  if (!q) { nukeBlocRows(""); return; }        // focused, nothing typed yet
+  if (!COUNTRY_DB) return;
+  nukeBlocRows(q, true);                       // only an exact bloc name leads
   const s = cityFold(q), hits = [];
   const push = i => { if (i >= 0 && !hits.includes(i)) hits.push(i); };
   // an exact alias wins outright: typing "us" must not offer Uruguay first
@@ -4963,6 +5479,7 @@ function nukeCountryRows(q) {
     };
     box.appendChild(row);
   }
+  nukeBlocRows(q, false);      // partial bloc matches trail the countries
 }
 
 // bound directly, not on DOMContentLoaded: this script sits below the markup,
@@ -4973,6 +5490,10 @@ function nukeCountryRows(q) {
   $("nukeCountry").addEventListener("input", () => {
     clearTimeout(nukeTimer);
     nukeTimer = setTimeout(() => nukeCountryRows($("nukeCountry").value.trim()), 60);
+  });
+  // the blocs announce themselves on focus rather than waiting to be guessed
+  $("nukeCountry").addEventListener("focus", () => {
+    if (!$("nukeCountry").value.trim()) nukeCountryRows("");
   });
   $("nukeCountry").addEventListener("keydown", e => {
     e.stopPropagation();
@@ -5020,7 +5541,8 @@ window.__sim = {
   // nuclear-exchange hooks: the dialogue is clicked in the tests, but the
   // country picker is a search box, so selection is set directly
   NUKE_POWERS, exTargets, exAllocate, exShotFlight, exAirFlight, exPos, exBuild,
-  exPlan, exCount, exRand, nukeCountryRows,
+  exPlan, exCount, exRand, nukeCountryRows, exPowerSites, exForce,
+  NUKE_BLOCS,
   get exch() { return exch; },
   exSelect: (src, countries, mode) => {
     nukeFill();
