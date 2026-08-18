@@ -111,8 +111,10 @@
   #cityResults .note { cursor:default; color:#9aa0a8; }
   /* ICBM mission dialogue: the target city is mandatory, so it opens the
      moment the preset is picked and blocks the launch until it is answered */
-  #icbmDlg { position:absolute; z-index:30; top:50%; left:50%;
-      transform:translate(-50%,-50%); width:330px; display:none; }
+  /* top edge FIXED (not vertically centred): the results list growing and
+     shrinking must only move the bottom edge, or rows shift mid-tap */
+  #icbmDlg { position:absolute; z-index:30; top:22%; left:50%;
+      transform:translateX(-50%); width:330px; display:none; }
   #icbmDlg h2 { font-size:14px; margin:0 0 3px; color:#fff; }
   #icbmCity { width:100%; box-sizing:border-box; padding:6px 10px; border-radius:8px;
       border:1px solid rgba(255,255,255,.25); background:#1c2128; color:#eee; outline:none; }
@@ -165,6 +167,8 @@
      bottom stack clears the button columns */
   body.touch #citySearch { top:54px; left:10px; transform:none; width:210px; }
   body.touch #icbmBar { top:96px; }
+  /* the expanded left panel covers their spot: they yield while it is open */
+  body.touch.ctlOpen #citySearch, body.touch.ctlOpen #icbmBar { display:none; }
   body.touch #bottomStack { left:6px; right:150px; }
   /* the bottom panels are display-only; on touch they must not swallow the
      joystick zone or look-drags under them */
@@ -311,6 +315,7 @@
 <div id="hud" class="panel">
   <div class="panelHead" id="hudHead"><b>Flight data</b><span class="caret">&#9662;</span></div>
   <div class="hudrow"><span>Phase</span><b id="hudPhase">idle</b></div>
+  <div class="hudrow"><span>Position</span><span id="hudPos">&ndash;</span></div>
   <div class="hudrow"><span>Pitch</span><span id="hudPitch">&ndash;</span></div>
   <div class="hudrow"><span>Alt AGL</span><span id="hudAgl">&ndash;</span></div>
   <div class="hudrow"><span>Alt MSL</span><span id="hudMsl">&ndash;</span></div>
@@ -1094,6 +1099,7 @@ const globe = new Globe(glc);
 const line3d = {
   ok: true, tagPoint: null, tagScreen: null,
   setLines: (name, polys, color, width) => globe.setLines(name, polys, color, width),
+  append: (name, pt, color, width) => globe.appendLine(name, pt, color, width),
   clear: name => globe.clearLines(name),
 };
 const mapReady = true;
@@ -1250,7 +1256,8 @@ function thrustDir(s, r, v, p) {
   return V3.scale(v, 1/sp);                               // gravity turn: follow v
 }
 function moveCamera(dt) {
-  if ($("followToggle").checked && simStatus === "flying" && sim) { chaseCamera(); return; }
+  if ($("followToggle").checked && simStatus === "flying" && sim) { chaseCamera(dt); return; }
+  chase = null;               // next follow re-engages at the default rig
   // touch attitude buttons: holding +°/−° turns the launch angle at 30 deg/s,
   // the same knob the scroll wheel and arrow keys drive on the desktop
   if (tAng && launchStage === "angle") nudgeAngle(tAng * 30 * dt);
@@ -1353,95 +1360,138 @@ function moveCamera(dt) {
 // object itself; halfway keeps both the projectile and its destination in
 // frame, where either extreme loses one of them.
 const CHASE_DIST = { balloon: 60, ball: 80, rocket: 500, icbm: 900 };
+// follow-mode state: the movable offset (object-frame F/R/U components) and
+// its velocity; null whenever follow is off, so re-engaging starts at the
+// default rig
+let chase = null;
 const CHASE_RIGHT = 0.25, CHASE_UP = 0.20;
-function chaseCamera() {
+function chaseCamera(dt) {
   const s = sim;
   const P = s.r;                                   // projectile position, ECEF
   const { east, north, up } = enuAt(P);
-  // Forward is the velocity's YAW ONLY (its ground-track bearing), never
-  // its climb angle (RW's amendment, 2026-08-16). A rig built on the full
-  // 3D velocity rolls the whole world: a 45 deg shot puts the camera 45 deg
-  // below the object and the horizon on a diagonal, and a vertical launch
-  // degenerates completely. Flattening forward to the ground track keeps
-  // the horizon level and the view readable at any launch angle, and it
-  // retires the degenerate-reference branch the old version needed.
-  const vE = V3.dot(s.v, east), vN = V3.dot(s.v, north);
-  const hs = Math.hypot(vE, vN);
-  // On a vertical or standstill flight the ground track has no direction to
-  // give; hold the last real bearing, falling back to the launch azimuth.
-  if (hs > 0.5) s._chaseBrg = Math.atan2(vE, vN);
-  else if (s._chaseBrg == null)
-    s._chaseBrg = (s.azim ?? launch.heading ?? cam.yaw) * Math.PI/180;
-  const brg = s._chaseBrg;
-  const F = V3.add(V3.scale(east, Math.sin(brg)), V3.scale(north, Math.cos(brg)));
-  const R = V3.unit(V3.cross(F, up));              // horizontal, to the right
-  const U = up;                                    // straight up: the rig never tilts
-  const d = CHASE_DIST[s.p.ptype] || 120;
-  let O = V3.add(V3.add(V3.scale(F, -d), V3.scale(R, CHASE_RIGHT*d)),
-                 V3.scale(U, CHASE_UP*d));
-  const d0 = V3.norm(O);                           // the rig's intended range
-  // Keep the camera above ground WITHOUT collapsing the rig. Straight up is
-  // where a rocket goes, so "behind" is straight down and the ideal spot is
-  // hundreds of metres underground; naively clamping the altitude there
-  // shrank the range and swung the object off screen. Instead lift the
-  // offset along local vertical and restore its length, which slides the
-  // camera around the object at constant range until it clears the terrain.
+  if (!chase) {
+    // ENGAGE: start at the default rig, aimed the way the fixed rig aimed
+    // (3-degree lead + golden horizon), ONCE. From here the position simply
+    // TRANSLATES with the object (offset held in the local ENU frame, no
+    // frame rotation, no auto-aim) and the look belongs to the mouse:
+    // normal controls, motion relative to the object (RW, 2026-08-18:
+    // "linear transcription, the same way, only relative to the object").
+    const vE = V3.dot(s.v, east), vN = V3.dot(s.v, north);
+    const hs = Math.hypot(vE, vN);
+    if (hs > 0.5) s._chaseBrg = Math.atan2(vE, vN);
+    else if (s._chaseBrg == null)
+      s._chaseBrg = (s.azim ?? launch.heading ?? cam.yaw) * Math.PI/180;
+    const brg = s._chaseBrg;
+    const F = V3.add(V3.scale(east, Math.sin(brg)), V3.scale(north, Math.cos(brg)));
+    const R = V3.unit(V3.cross(F, up));
+    const d = CHASE_DIST[s.p.ptype] || 120;
+    const O0 = V3.add(V3.add(V3.scale(F, -d), V3.scale(R, CHASE_RIGHT*d)),
+                      V3.scale(up, CHASE_UP*d));
+    chase = { off: [V3.dot(O0, east), V3.dot(O0, north), V3.dot(O0, up)],
+              vel: [0, 0, 0] };
+    const C0 = V3.add(P, O0);
+    const L = V3.unit(V3.sub(P, C0));
+    const T = Math.acos(Math.max(-1, Math.min(1, V3.dot(F, L))));
+    const AIM_MAX = 3*Math.PI/180;
+    let A = L;
+    if (T > 1e-4) {
+      const f = Math.min(0.5, AIM_MAX/T);
+      const sT = Math.sin(T);
+      A = V3.unit(V3.add(V3.scale(L, Math.sin((1-f)*T)/sT),
+                         V3.scale(F, Math.sin(f*T)/sT)));
+    }
+    const e2 = enuAt(C0);
+    cam.yaw = (Math.atan2(V3.dot(A, e2.east), V3.dot(A, e2.north))*180/Math.PI + 360) % 360;
+    const lla0 = rToLLA(C0);
+    const dip = Math.acos(Math.min(1, R_EARTH/(R_EARTH + Math.max(0, lla0.h))))*180/Math.PI;
+    const GOLD = (Math.sqrt(5) - 1)/2;               // 0.618, the earth's share
+    const halfFov = 36.87/2*Math.PI/180;
+    const lift = Math.atan((1 - 2*GOLD)*Math.tan(halfFov))*180/Math.PI;
+    const el = Math.atan2(V3.dot(L, e2.up),
+      Math.hypot(V3.dot(L, e2.east), V3.dot(L, e2.north)))*180/Math.PI;
+    const keep = halfFov*180/Math.PI - 7.5;
+    cam.pitch = Math.max(el - keep, Math.min(el + keep,
+      Math.max(-89.9, Math.min(89.9, -dip + lift))));
+  }
+  // PARALLEL TRANSPORT, inherited from the free camera: the object carries
+  // the rig along a great circle, and the local east/north frame the offset
+  // and velocity live in turns as meridians converge. Rotate them and the
+  // look yaw by the frame's own turn each step, or a strafe near the poles
+  // follows curved latitude lines instead of going straight (RW, 2026-08-18).
+  const oll = rToLLA(P);
+  if (chase.pLat != null && surfDist(chase.pLat, chase.pLon, oll.lat, oll.lon) > 0.5) {
+    const dep = bearingDeg(chase.pLat, chase.pLon, oll.lat, oll.lon);
+    const arrive = (bearingDeg(oll.lat, oll.lon, chase.pLat, chase.pLon) + 180) % 360;
+    let turn = arrive - dep;
+    if (turn > 180) turn -= 360; else if (turn < -180) turn += 360;
+    if (Math.abs(turn) < 90) {          // a degenerate bearing is not a turn
+      const tr = turn*Math.PI/180, c = Math.cos(tr), sn = Math.sin(tr);
+      const oe = chase.off[0], on2 = chase.off[1];
+      chase.off[0] = oe*c + on2*sn;
+      chase.off[1] = on2*c - oe*sn;
+      const ve = chase.vel[0], vn = chase.vel[1];
+      chase.vel[0] = ve*c + vn*sn;
+      chase.vel[1] = vn*c - ve*sn;
+      cam.yaw = (cam.yaw + turn + 360) % 360;
+    }
+  }
+  chase.pLat = oll.lat; chase.pLon = oll.lon;
+  // user movement: identical to free flight, landing on the offset. The
+  // components are plain east/north/up displacements, so this is linear
+  // translation riding the object, nothing rotates underneath you. Speed
+  // scales with the DISTANCE FROM THE OBJECT, not height above ground
+  // (RW, 2026-08-18), on a SHALLOW power law (also RW): rng^0.6 around a
+  // 600 m pivot, so it is less slow up close and less runaway far out
+  // than the proportional ramp (50 m moves ~3x faster than proportional,
+  // 100 km ~7x slower).
+  const rng = Math.max(Math.hypot(chase.off[0], chase.off[1], chase.off[2]), 1);
+  const eff = 600 * Math.pow(rng / 600, 0.6);
+  const scale = Math.min(Math.max(eff, SPD_MIN), SPD_MAX) / WALK * speedMult;
+  const scaleV = scale;
+  const yawR = cam.yaw*Math.PI/180, pitR = cam.pitch*Math.PI/180, cp = Math.cos(pitR);
+  const fwd = [Math.sin(yawR)*cp, Math.cos(yawR)*cp, Math.sin(pitR)];
+  const right = V3.unit([fwd[1], -fwd[0], 0]);
+  const ax = (keys.has("KeyW")?1:0) - (keys.has("KeyS")?1:0) + tFwd;
+  const ay = (keys.has("KeyD")?1:0) - (keys.has("KeyA")?1:0) + tStrafe;
+  const az = (keys.has("Space")?1:0) - ((keys.has("ShiftLeft")||keys.has("ShiftRight"))?1:0) + tUp;
+  const wish = V3.add(V3.add(V3.scale(fwd, ax), V3.scale(right, ay)), [0, 0, az]);
+  const sprint = sprintLatch || keys.has("AltLeft") || keys.has("AltRight");
+  const mag = Math.min(1, V3.norm(wish));
+  const cv = chase.vel;
+  if (mag > 0.02 && dt) {
+    const w = V3.unit(wish), a = ACCEL*dt*mag;
+    cv[0] += w[0]*a*scale; cv[1] += w[1]*a*scale; cv[2] += w[2]*a*scaleV;
+  }
+  const damp = Math.pow(CAMDRAG, dt || 0);
+  cv[0] *= damp; cv[1] *= damp; cv[2] *= damp;
+  const base = (sprint ? SPRINT : WALK) * (mag > 0.02 ? mag : 1);
+  const hn = Math.hypot(cv[0], cv[1]);
+  if (hn > base*scale) { const k = base*scale/hn; cv[0] *= k; cv[1] *= k; }
+  if (Math.abs(cv[2]) > base*scaleV) cv[2] = Math.sign(cv[2]) * base*scaleV;
+  if (dt) {
+    chase.off[0] += cv[0]*dt;
+    chase.off[1] += cv[1]*dt;
+    chase.off[2] += cv[2]*dt;
+  }
+  const on = Math.hypot(chase.off[0], chase.off[1], chase.off[2]);
+  if (on < 5) {                                    // never inside the object
+    const k = 5/(on || 1);
+    chase.off = chase.off.map(v => v*k);
+  }
+  let O = V3.add(V3.add(V3.scale(east, chase.off[0]), V3.scale(north, chase.off[1])),
+                 V3.scale(up, chase.off[2]));
+  // keep the camera above ground: lift along local vertical, write back
   let C = V3.add(P, O), lla = rToLLA(C);
   for (let i = 0; i < 3; i++) {
     const floor = (terrainAt(lla.lat, lla.lon) ?? s.ground0) + 2;
     if (lla.h >= floor) break;
     O = V3.add(O, V3.scale(V3.unit(C), floor - lla.h));
-    O = V3.scale(O, d0/(V3.norm(O) || 1));
     C = V3.add(P, O); lla = rToLLA(C);
   }
   const floorF = (terrainAt(lla.lat, lla.lon) ?? s.ground0) + 2;
-  if (lla.h < floorF) { C = llToR(lla.lat, lla.lon, floorF); lla = rToLLA(C); }
+  if (lla.h < floorF) { C = llToR(lla.lat, lla.lon, floorF); lla = rToLLA(C); O = V3.sub(C, P); }
+  chase.off = [V3.dot(O, east), V3.dot(O, north), V3.dot(O, up)];
   cam.lat = lla.lat; cam.lon = lla.lon; cam.alt = lla.h;
-  // Aim: halfway between the direction of travel and looking straight at
-  // the object, where "direction of travel" is again the FLATTENED one, so
-  // the camera never pitches up with a climbing shot. In the undistorted
-  // rig that is 8.9 deg either side, well inside the frame; when the
-  // terrain has slid the camera around, halfway could put the object
-  // outside the field of view, so the aim is held within AIM_MAX of the
-  // object and gives up the rest of the lead.
-  const L = V3.unit(V3.sub(P, C));
-  const T = Math.acos(Math.max(-1, Math.min(1, V3.dot(F, L))));
-  // How far the crosshair leads the object. The rig sits up and to the
-  // right, so leading puts the object just down-left of the centre and
-  // leaves the space it is flying into visible. It used to lead by the full
-  // 8.9 degrees the offset produces, which pushed the object noticeably off
-  // centre; 3 degrees keeps the lead readable and the object nearly centred
-  // (RW, 2026-08-18).
-  const AIM_MAX = 3*Math.PI/180;
-  let A = L;
-  if (T > 1e-4) {
-    const f = Math.min(0.5, AIM_MAX/T);            // 0.5 = the halfway rule
-    const sT = Math.sin(T);
-    A = V3.unit(V3.add(V3.scale(L, Math.sin((1-f)*T)/sT),
-                       V3.scale(F, Math.sin(f*T)/sT)));
-  }
-  const e2 = enuAt(C);
-  const ae = V3.dot(A, e2.east), an = V3.dot(A, e2.north);
-  cam.yaw = (Math.atan2(ae, an)*180/Math.PI + 360) % 360;
-  // Golden-horizon pitch (RW, 2026-08-18): the pitch no longer aims at the
-  // object; it holds the HORIZON at the golden section of the frame, earth
-  // the major share (61.8%) below, sky the minor above. The limb dips below
-  // local horizontal by arccos(R/r), so the higher the chase climbs the
-  // further the camera pitches down, and from orbit it looks well down at
-  // the planet. 36.87 deg is the renderer's FOVY; the lift term is where
-  // the golden line sits, in view angle, relative to the frame's centre.
-  // One guard: the object itself must stay comfortably in frame, so the
-  // pitch is clamped to keep it within 7.5 deg of the frame edge (the dot
-  // was nearly walking off the top when pitched well down from space).
-  const dip = Math.acos(Math.min(1, R_EARTH/(R_EARTH + Math.max(0, cam.alt))))*180/Math.PI;
-  const GOLD = (Math.sqrt(5) - 1)/2;               // 0.618, the earth's share
-  const halfFov = 36.87/2*Math.PI/180;
-  const lift = Math.atan((1 - 2*GOLD)*Math.tan(halfFov))*180/Math.PI;
-  const el = Math.atan2(V3.dot(L, e2.up),
-    Math.hypot(V3.dot(L, e2.east), V3.dot(L, e2.north)))*180/Math.PI;
-  const keep = halfFov*180/Math.PI - 7.5;
-  cam.pitch = Math.max(el - keep, Math.min(el + keep,
-    Math.max(-89.9, Math.min(89.9, -dip + lift))));
 }
 
 // where a screen point meets the terrain; null when it points at sky.
@@ -1492,6 +1542,9 @@ function bindCollapse(pid, hid, start) {
   const set = c => {
     p.classList.toggle("collapsed", c);
     head.querySelector(".caret").innerHTML = c ? "&#9656;" : "&#9662;";
+    // on a phone the expanded left panel covers the search's spot, so the
+    // search (and the icbm bar) yield to it while it is open
+    if (pid === "ctl") document.body.classList.toggle("ctlOpen", !c);
   };
   head.addEventListener("click", () => set(!p.classList.contains("collapsed")));
   set(start);
@@ -1554,7 +1607,8 @@ function flyHintHtml() {
       + "the ghost arc previews the whole flight. <b>Left click</b> launches, "
       + "<b>right click</b> goes back to the heading.";
   if (simStatus === "flying" && $("followToggle").checked)
-    return "Following &middot; the camera trails the object. <b>Esc</b> or a <b>click</b> "
+    return "Following &middot; normal fly controls, with your motion RELATIVE to the "
+      + "object. <b>Esc</b> or a <b>click</b> "
       + "takes the controls back, <b>T</b> pauses, <b>arrow left/right</b> changes time speed.";
   if (simStatus === "flying")
     return "Flying &middot; <b>T</b> pauses, <b>arrow left/right</b> changes time speed, "
@@ -2042,7 +2096,7 @@ $("tno").addEventListener("pointerdown", e => { e.preventDefault(); if (!chaseRe
 // flat-ENU integration (regression-checked); at orbital speeds the same
 // equations remain valid, so a fast preset is a parameters-only addition.
 let sim = null;
-let playing = false, lastFrame = null, stepCarry = 0;
+let playing = false, lastFrame = null, stepCarry = 0, fpsAvg = 0;
 // The simulated wall clock: a persistent clock that ALWAYS advances at the
 // time-speed setting (crank 1000x with nothing flying and watch night
 // fall). It never resets on its own: the "now" button beside it snaps it
@@ -2202,6 +2256,12 @@ async function doFire() {
   setPauseUi();
   trackShadow = [[launch.lat, launch.lon, g0 + GROUND_LIFT]];
   track3d = [[launch.lat, launch.lon, g0 + p.relH]];
+  // seed the APPEND-mode GL trails (they grow segment by segment and are
+  // never rebuilt in flight; see globe.appendLine). Clear first: a re-fire
+  // without a fresh placement must not append across from the old trail.
+  line3d.clear("track"); globe.clearLines("shadow");
+  line3d.append("track", track3d[0], [0.29, 0.56, 0.85, 0.95], 2.5);
+  globe.appendLine("shadow", trackShadow[0], [0.19, 0.44, 0.75, 0.75], 2.5);
   // the dot marker is the object's GROUND SHADOW, demoted to a small grey
   // disc; the object itself is the blue #objDot billboard riding the 3D
   // point (plus the faint 3D cross), label beside it. Remove any previous
@@ -2218,7 +2278,8 @@ async function doFire() {
   objMarker.setPos(launch.lat, launch.lon, g0);
   s.dotEl = dot;
   setHint("Flying. Left click starts a new launch.");
-  $("hudPhase").textContent = s.phase;
+  const ph0 = phaseHtml(s).match(/<b>(.*?)<\/b>/);
+  $("hudPhase").textContent = ph0 ? ph0[1] : s.phase;
 }
 
 // force model in the rotating Earth frame; acceleration for candidate (r, v)
@@ -2908,6 +2969,7 @@ function tick(ts) {
   requestAnimationFrame(tick);
   const realDt = lastFrame == null ? 0 : Math.min((ts - lastFrame)/1000, 0.25);
   lastFrame = ts;
+  if (realDt > 0) fpsAvg += (1/realDt - fpsAvg) * 0.05;   // ~1 s smoothing
   {
     moveCamera(realDt);
     // everything below sizes or projects against the camera, so the renderer's
@@ -2947,12 +3009,18 @@ function tick(ts) {
     if (isTouch) $("tang").style.display = launchStage === "angle" ? "flex" : "none";
     maybeRefreshWind();
     updateWallClock();
-    { // camera readout: 4 decimals ~ 11 m, enough to relocate a view
+    { // camera readout: 4 decimals ~ 11 m, enough to relocate a view.
+      // The last line is the load instrument: fps plus what the frame is
+      // actually drawing, so a slow scene tells you WHICH cost it is
+      // (building triangles vs everything-else pixel work).
       const cg = terrainAt(cam.lat, cam.lon);
+      const bt = globe.stats.bldgTris || 0;
       const t = cam.lat.toFixed(4) + ", " + cam.lon.toFixed(4)
         + "<br>" + fmtAlt(cam.alt) + " MSL · "
         + (cg == null ? "..." : fmtAlt(Math.max(0, cam.alt - cg))) + " AGL"
-        + "<br>" + cam.yaw.toFixed(0) + "&deg; / " + cam.pitch.toFixed(0) + "&deg;";
+        + "<br>" + cam.yaw.toFixed(0) + "&deg; / " + cam.pitch.toFixed(0) + "&deg;"
+        + "<br>" + Math.round(fpsAvg) + " fps · " + globe.stats.tiles + " tiles · "
+        + (bt >= 1000 ? Math.round(bt/1000) + "k" : bt) + " bldg tris";
       const el = $("camPos");
       if (el.dataset.t !== t) { el.dataset.t = t; el.innerHTML = t; }
     }
@@ -3033,8 +3101,9 @@ function shadowH(la, lo) {
   return (terrainAt(la, lo) ?? (sim && sim.ground0) ?? launch.groundElev ?? 0) + GROUND_LIFT;
 }
 function pushTrack(ll) {   // 2D ground shadow of the flight path
-  trackShadow.push([ll[0], ll[1], shadowH(ll[0], ll[1])]);
-  globe.setLines("shadow", [trackShadow], [0.19, 0.44, 0.75, 0.75], 2.5);
+  const sp = [ll[0], ll[1], shadowH(ll[0], ll[1])];
+  trackShadow.push(sp);
+  globe.appendLine("shadow", sp, [0.19, 0.44, 0.75, 0.75], 2.5);
 }
 // The stored track is sampled every track3dEvery seconds, so between samples the
 // drawn line stops short of the object: at speed that gap is most of the screen
@@ -3064,8 +3133,9 @@ function drawTrackLive() {
 function pushTrack3d(ll, altMsl) {
   // real MSL altitudes on real terrain: the old launch-ground display datum
   // (and the kinks lazy terrain data put into it) is gone
-  track3d.push([ll[0], ll[1], altMsl]);
-  line3d.setLines("track", [track3d], [0.29, 0.56, 0.85, 0.95], 2.5);
+  const pt = [ll[0], ll[1], altMsl];
+  track3d.push(pt);
+  line3d.append("track", pt, [0.29, 0.56, 0.85, 0.95], 2.5);
 }
 
 function fmtClock(t) {
@@ -3196,7 +3266,13 @@ function updateHud(s, ll, ground, force) {   // text only; positions above
   const pitch = Math.atan2(vU, hs) * 180/Math.PI;
   const brg = (Math.atan2(vE, vN)*180/Math.PI + 360) % 360;
   $("objTag").textContent = `${fmtAlt(Math.max(0, h - ground))} AGL · ${fmtSpeed(total)}`;
+  // the Phase row quotes the bottom narrator's own headline (its first bold
+  // span), so the two can never disagree; it used to show the raw internal
+  // state, which for an ICBM read "boost" the whole flight (RW, 2026-08-18)
+  const ph = phaseHtml(s).match(/<b>(.*?)<\/b>/);
+  if (ph) $("hudPhase").textContent = ph[1];
   if (hs > 0.05) $("headingOut").textContent = brg.toFixed(0) + "°";
+  $("hudPos").textContent = ll[0].toFixed(4) + ", " + ll[1].toFixed(4);
   $("hudPitch").textContent = (pitch >= 0 ? "+" : "") + pitch.toFixed(1) + "°";
   $("hudAgl").textContent = fmtAlt(h - ground);
   $("hudMsl").textContent = fmtAlt(h);
@@ -3322,23 +3398,34 @@ $("windCurrent").addEventListener("change", () => {
 $("fetchWind").addEventListener("click", () =>
   loadWind(launch.lat ?? cam.lat, launch.lon ?? cam.lon));
 
-// Wind follows the camera: teleporting or flying to another city used to
-// leave the whole panel describing the place you left, until a launch there
-// forced a refetch. Probes the staleness rule (20 km or an hour, in
-// windProfileStale) a few times a minute, never during a flight, since
-// swapping the airmass under an active flight changes its physics; a failed
-// fetch backs off a minute so a dead API is not hammered.
+// Wind follows the OBJECT while something flies, and the camera otherwise
+// (teleporting to another city used to leave the panel describing the place
+// you left). A flight that has travelled into different weather refetches
+// for where it is now, but only below ~35 km, where the air is thick enough
+// for wind to matter: an ICBM refetches during boost and again on reentry
+// near the target, and coasts through the vacuum on whatever it had (RW's
+// call, 2026-08-18: "if it travels a large distance it should use the new
+// wind at the new location"). Probes the staleness rule (20 km or an hour)
+// at most every 5 s, so a fast mover cannot spam the API; a failed fetch
+// backs off a minute. The profile swap is a step change in the airmass,
+// which is what flying into new weather is.
 let windAutoBusy = false, windAutoAt = 0;
 function maybeRefreshWind() {
   if (windAutoBusy || !$("windCurrent").checked) return;
-  if (sim && simStatus === "flying") return;
+  let la = cam.lat, lo = cam.lon;
+  if (sim && simStatus === "flying") {
+    const ll = simLatLon(sim);
+    const g = terrainAt(ll[0], ll[1]) ?? sim.ground0;
+    if (simAlt(sim) - g > 35000) return;
+    la = ll[0]; lo = ll[1];
+  }
   const now = performance.now();
   if (now - windAutoAt < 5000) return;
-  if (!windProfileStale(cam.lat, cam.lon)) return;
+  if (!windProfileStale(la, lo)) return;
   windAutoAt = now; windAutoBusy = true;
-  loadWind(cam.lat, cam.lon).finally(() => {
+  loadWind(la, lo).finally(() => {
     windAutoBusy = false;
-    if (windProfileStale(cam.lat, cam.lon)) windAutoAt = performance.now() + 55000;
+    if (windProfileStale(la, lo)) windAutoAt = performance.now() + 55000;
   });
 }
 
@@ -3477,6 +3564,7 @@ function showLocalCities(q, box, onPick) {
   const loc = localResults(q);
   if (!loc.length) return;
   box.innerHTML = "";
+  box.style.maxHeight = ""; box.style.overflowY = "";   // a keystroke resizes freely
   for (const r of loc) cityRow(box, r, onPick);
 }
 
@@ -3506,6 +3594,7 @@ async function citySearch(q, box, onPick) {
   if (cityAbort) cityAbort.abort();
   cityAbort = new AbortController();
   const loc = localResults(q);
+  const preH = box.getBoundingClientRect().height;   // size before the merge
   let res;
   try {
     const r = await fetch("https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&addressdetails=1&q="
@@ -3542,6 +3631,12 @@ async function citySearch(q, box, onPick) {
     d.onclick = () => onPick(+p.lat, +p.lon, name, label);
     box.appendChild(d);
   }
+  // remote rows must never grow the dropdown under the user's finger: past
+  // the pre-merge height they scroll instead (RW: growth causes misclicks)
+  if (preH > 20 && box.scrollHeight > preH + 1) {
+    box.style.maxHeight = preH + "px";
+    box.style.overflowY = "auto";
+  } else { box.style.maxHeight = ""; box.style.overflowY = ""; }
 }
 $("cityInput").addEventListener("input", () => {
   clearTimeout(cityTimer);
@@ -3798,6 +3893,7 @@ window.__sim = {
   get windProfileMeta() { return windProfileMeta; },
   get cam() { return cam; }, get line3dOk() { return line3d.ok; },
   globe, terrainAt, isa, windAt, simAlt: () => sim ? simAlt(sim) : null,
+  simLatLon: () => sim ? simLatLon(sim) : null,
   fmtDist, fmtAlt, fmtSpeed, applyPreset, cityGo, citySearch,
   // ballistic-missile mission hooks: the dialogue needs a real click, so
   // tests set the target and the warhead directly

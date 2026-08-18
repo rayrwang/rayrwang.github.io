@@ -118,6 +118,47 @@ async function decodeTerrarium(buf) {
   }
   return g;
 }
+// The decode above is tens of milliseconds of branchy per-byte work per
+// tile, and it used to run on the MAIN thread: flying into fresh terrain
+// decoded dozens of tiles back to back and the frame rate dipped until
+// loading finished (RW's report; measured 77 decodes in one 9 s burst with
+// frame gaps over 100 ms). A two-worker pool runs the SAME function off the
+// main thread, built from its own source so there is no second copy to
+// drift; if workers are unavailable it falls back to decoding inline.
+const terraPool = (() => {
+  let workers = null, next = 0, id = 0;
+  const jobs = new Map();
+  const fail = why => {
+    workers = null;
+    for (const j of jobs.values()) j.rej(new Error(why));
+    jobs.clear();
+  };
+  try {
+    const src = "const decodeTerrarium = " + decodeTerrarium.toString() + ";\n" +
+      "onmessage = async e => { try { const g = await decodeTerrarium(e.data.buf);" +
+      " postMessage({ id: e.data.id, g }, [g.buffer]); }" +
+      " catch (err) { postMessage({ id: e.data.id, err: String(err) }); } };";
+    const url = URL.createObjectURL(new Blob([src], { type: "text/javascript" }));
+    workers = [0, 1].map(() => {
+      const w = new Worker(url);
+      w.onmessage = e => {
+        const j = jobs.get(e.data.id);
+        if (!j) return;
+        jobs.delete(e.data.id);
+        if (e.data.err) j.rej(new Error(e.data.err)); else j.res(e.data.g);
+      };
+      w.onerror = () => fail("terrain worker died");   // tiles retry inline
+      return w;
+    });
+  } catch (e) { workers = null; }
+  return buf => {
+    if (!workers) return decodeTerrarium(buf);
+    return new Promise((res, rej) => {
+      jobs.set(++id, { res, rej });
+      workers[next++ % workers.length].postMessage({ id, buf }, [buf]);
+    });
+  };
+})();
 
 /* tile <-> geo (web mercator) */
 // normalized: a camera that keeps flying west accumulates longitude past
@@ -416,10 +457,19 @@ precision highp float;
 in vec3 aA; in vec3 aB; in vec2 aSE;
 uniform mat4 uVP; uniform vec3 uOrigin; uniform vec2 uVp;
 uniform float uW; uniform float uLogF;
+out float vW;
 void main() {
   vec4 ca = uVP * vec4(aA + uOrigin, 1.0);
   vec4 cb = uVP * vec4(aB + uOrigin, 1.0);
-  if (ca.w < 0.001 || cb.w < 0.001) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  // Only a segment ENTIRELY behind the camera is dropped. One that crosses
+  // the camera plane is clipped to it, not discarded: discarding erased a
+  // whole screen-spanning segment the moment one endpoint slipped behind
+  // the chase camera, which rides ON the trail. (A geometric fix; the
+  // chase-flicker hunt's whole-frame census measured steady both with and
+  // without it under SwiftShader, so it is not by itself the flicker.)
+  if (ca.w < 0.5 && cb.w < 0.5) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
+  if (ca.w < 0.5) ca = mix(ca, cb, (0.5 - ca.w) / (cb.w - ca.w));
+  if (cb.w < 0.5) cb = mix(cb, ca, (0.5 - cb.w) / (ca.w - cb.w));
   vec2 pa = ca.xy / ca.w * uVp;
   vec2 pb = cb.xy / cb.w * uVp;
   vec2 d = pb - pa;
@@ -428,13 +478,25 @@ void main() {
   vec4 pos = aSE.y > 0.5 ? cb : ca;
   pos.xy += nrm * aSE.x * uW / uVp * pos.w;
   ${"pos.z = (log2(max(1e-6, pos.w + 1.0)) * uLogF - 1.0) * pos.w;"}
+  vW = pos.w;
   gl_Position = pos;
 }`;
 
+// Depth per FRAGMENT, not per vertex: a screen-spanning trail segment can
+// run from half a metre to kilometres of eye depth, and log depth
+// interpolated linearly between its two vertices lands parts of the line
+// behind the terrain (the renderer's long-standing known limitation, worst
+// exactly when the chase camera rides close to the trail). vW interpolates
+// perspective-correct, which reproduces the true eye depth along the
+// segment, so the fragment depth is exact everywhere on the line.
 const LINE_FS = `#version 300 es
-precision mediump float;
-uniform vec4 uC; out vec4 frag;
-void main() { frag = vec4(uC.rgb * uC.a, uC.a); }`;
+precision highp float;
+in float vW;
+uniform vec4 uC; uniform float uLogF; out vec4 frag;
+void main() {
+  frag = vec4(uC.rgb * uC.a, uC.a);
+  gl_FragDepth = clamp((log2(max(1e-6, vW + 1.0)) * uLogF - 1.0) * 0.5 + 0.5, 0.0, 1.0);
+}`;
 
 
 // buildings: flat-shaded extrusions, lambert on the face normal
@@ -703,7 +765,7 @@ void main() {
 }`;
 
 /* ---------- renderer ---------- */
-const GLOBE_BUILD = "2026-08-18i";
+const GLOBE_BUILD = "2026-08-18k";
 class Globe {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -1214,7 +1276,7 @@ class Globe {
       };
       fetch(this.hgtUrl({ z, x, y }))
         .then(r => r.ok ? r.arrayBuffer() : Promise.reject(r.status))
-        .then(decodeTerrarium)
+        .then(terraPool)
         .then(g => {
           if (g.length !== 65536) throw new Error("bad tile size");
           // sanitize: the bucket contains occasional corrupt patches
@@ -1560,7 +1622,85 @@ class Globe {
   }
   clearLines(name) {
     const s = this.lines.get(name);
-    if (s) { s.polys = []; s.dirty = true; s.n = 0; }
+    if (!s) return;
+    if (s.append) {
+      const gl = this.gl;
+      if (s.vao) { gl.deleteVertexArray(s.vao); gl.deleteBuffer(s.vbuf); gl.deleteBuffer(s.ibuf); }
+      this.lines.delete(name);
+      return;
+    }
+    s.polys = []; s.dirty = true; s.n = 0;
+  }
+
+  // Append-mode polyline: the flight trail grows one sample at a time, and
+  // every flicker sighting on RW's Mesa laptop lines up with frames where
+  // the whole set was rebuilt and re-uploaded (during ICBM boost samples
+  // land every 0.05 s of sim time, so "rebuild per sample" was still nearly
+  // every frame). An append slot never rebuilds: the first call seeds the
+  // anchor, each further call writes ONLY the new segment's bytes past the
+  // region any earlier draw used (bufferSubData into pre-allocated space),
+  // and the rare capacity growth builds fresh buffers from the retained
+  // CPU copy and swaps. No draw ever references re-specified data.
+  appendLine(name, pt, color, width) {
+    const gl = this.gl;
+    let s = this.lines.get(name);
+    if (!s) {
+      s = { append: true, vao: null, vbuf: null, ibuf: null, n: 0,
+            seg: 0, capSeg: 0, cpuV: [], cpuI: [], pts: [pt],
+            color, width, last: pt, anchor: ecef(pt[0], pt[1], pt[2]) };
+      this.lines.set(name, s);
+      return;
+    }
+    if (!s.append) return;                      // name already used by setLines
+    const sub = densify([s.last, pt]);
+    s.last = pt;
+    for (let i = 1; i < sub.length; i++) s.pts.push(sub[i]);   // CPU copy for readers
+    const newV = [], newI = [];
+    for (let i = 0; i + 1 < sub.length; i++) {
+      const a = vsub(ecef(sub[i][0], sub[i][1], sub[i][2]), s.anchor);
+      const b = vsub(ecef(sub[i + 1][0], sub[i + 1][1], sub[i + 1][2]), s.anchor);
+      if (Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]) < 0.01) continue;
+      const vi = (s.seg + newI.length / 6) * 4;
+      for (const [side, end] of [[-1, 0], [1, 0], [-1, 1], [1, 1]])
+        newV.push(a[0], a[1], a[2], b[0], b[1], b[2], side, end);
+      newI.push(vi, vi + 1, vi + 2, vi + 1, vi + 3, vi + 2);
+    }
+    if (!newV.length) return;
+    s.cpuV.push(...newV); s.cpuI.push(...newI);
+    const segs = newI.length / 6;
+    if (s.seg + segs > s.capSeg) {              // grow: fresh buffers, swap
+      const old = { vao: s.vao, vbuf: s.vbuf, ibuf: s.ibuf };
+      s.capSeg = Math.max(1024, s.capSeg * 2, s.seg + segs);
+      s.vao = gl.createVertexArray();
+      s.vbuf = gl.createBuffer(); s.ibuf = gl.createBuffer();
+      gl.bindVertexArray(s.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, s.vbuf);
+      gl.bufferData(gl.ARRAY_BUFFER, s.capSeg * 4 * 32, gl.DYNAMIC_DRAW);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array(s.cpuV));
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, s.ibuf);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, s.capSeg * 24, gl.DYNAMIC_DRAW);
+      gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, 0, new Uint32Array(s.cpuI));
+      gl.bindVertexArray(null);
+      if (old.vao) {
+        gl.deleteVertexArray(old.vao);
+        gl.deleteBuffer(old.vbuf); gl.deleteBuffer(old.ibuf);
+      }
+    } else {                                    // the common path: tail bytes only
+      gl.bindBuffer(gl.ARRAY_BUFFER, s.vbuf);
+      gl.bufferSubData(gl.ARRAY_BUFFER, s.seg * 128, new Float32Array(newV));
+      gl.bindBuffer(gl.ARRAY_BUFFER, null);
+      gl.bindVertexArray(s.vao);
+      gl.bufferSubData(gl.ELEMENT_ARRAY_BUFFER, s.seg * 24, new Uint32Array(newI));
+      gl.bindVertexArray(null);
+    }
+    s.seg += segs;
+    s.n = s.seg * 6;
   }
   _buildLines(s) {
     const gl = this.gl;
@@ -1580,33 +1720,32 @@ class Globe {
         vi += 4;
       }
     }
-    // FRESH buffers and VAO on every rebuild, old ones deleted after the
-    // swap. Re-specifying (bufferData) a buffer that an in-flight draw may
-    // still reference is legal GL but driver-dependent in practice:
-    // SwiftShader and desktop NVIDIA masked it, while RW's Mesa laptop
-    // blinked the ENTIRE trail on rebuild frames (whole line one frame,
-    // nothing the next, both screenshotted 2026-08-18). Deleting the old
-    // buffer is safe: GL defers the free until no draw references it.
-    const old = { vao: s.vao, vbuf: s.vbuf, ibuf: s.ibuf };
-    s.vao = gl.createVertexArray();
-    s.vbuf = gl.createBuffer(); s.ibuf = gl.createBuffer();
+    // Plain in-place upload. (A fresh-buffers-per-rebuild variant was tried
+    // while hunting the trail flicker; the A/B census was steady both ways,
+    // so it was reverted rather than left as churn: the sound ring rebuilds
+    // every frame. The flight trails no longer pass through here at all;
+    // they are append slots, see appendLine.)
+    if (!s.vao) {
+      s.vao = gl.createVertexArray();
+      s.vbuf = gl.createBuffer(); s.ibuf = gl.createBuffer();
+      gl.bindVertexArray(s.vao);
+      gl.bindBuffer(gl.ARRAY_BUFFER, s.vbuf);
+      gl.enableVertexAttribArray(0);
+      gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
+      gl.enableVertexAttribArray(1);
+      gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
+      gl.enableVertexAttribArray(2);
+      gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, s.ibuf);
+      gl.bindVertexArray(null);
+    }
     gl.bindVertexArray(s.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, s.vbuf);
-    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vs), gl.STATIC_DRAW);
-    gl.enableVertexAttribArray(0);
-    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 32, 0);
-    gl.enableVertexAttribArray(1);
-    gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 32, 12);
-    gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 32, 24);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vs), gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, s.ibuf);
-    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(is), gl.STATIC_DRAW);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint32Array(is), gl.DYNAMIC_DRAW);
     gl.bindVertexArray(null);
     s.n = is.length;
-    if (old.vao) {
-      gl.deleteVertexArray(old.vao);
-      gl.deleteBuffer(old.vbuf); gl.deleteBuffer(old.ibuf);
-    }
   }
 
   // Coloured bands on the ground around a point (blast rings), as
@@ -2255,6 +2394,7 @@ Globe.prototype._bldgBuildStep = function (c, deadline) {
            hgtStamp: this._hgtStampFor(z, x, y), data };
 };
 Globe.prototype._renderBuildings = function (list) {
+  this.stats.bldgTris = 0;
   if (this.camAglNow > this.bldgAglMax) return;   // invisible from up there
   this._bldgInit();
   const B = this.bldg;
@@ -2342,10 +2482,12 @@ Globe.prototype._renderBuildings = function (list) {
     gl.bindTexture(gl.TEXTURE_2D, this.tSkyV);
     gl.uniform1i(u.uSkyV, 4);
   }
+  let triSum = 0;
   for (const key of want) {
     const m = B.meshes.get(key);
     if (!m || !m.n) continue;
     m.frame = this.frame;
+    triSum += m.n;
     // terrain arrived since this mesh was built: queue a rebase through the
     // same incremental cursor; the stale mesh keeps drawing meanwhile
     if (!B.cursor && m.data) {
@@ -2361,6 +2503,7 @@ Globe.prototype._renderBuildings = function (list) {
     gl.bindVertexArray(m.vao);
     gl.drawElements(gl.TRIANGLES, m.n, gl.UNSIGNED_INT, 0);
   }
+  this.stats.bldgTris = (triSum / 3) | 0;
   gl.bindVertexArray(null);
   // LRU
   if (B.meshes.size > BLDG_CAP) {
