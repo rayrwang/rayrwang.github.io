@@ -647,6 +647,9 @@ class Globe {
       preserveDrawingBuffer: true });   // valid readback for tests/screenshots
     if (!gl) throw new Error("WebGL2 unavailable");
     this.gl = gl;
+    this.aniso = gl.getExtension("EXT_texture_filter_anisotropic");
+    this.anisoMax = this.aniso
+      ? Math.min(8, gl.getParameter(this.aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)) : 0;
     this.cam = { lat: 0, lon: 0, alt: 1000, yaw: 0, pitch: -30 };
     this.buildTag = GLOBE_BUILD;
     console.log("globe.js build", GLOBE_BUILD);
@@ -1363,6 +1366,11 @@ class Globe {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
         gl.generateMipmap(gl.TEXTURE_2D);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        // anisotropic filtering: without it, trilinear at ground-level
+        // grazing angles collapses to the coarsest mip and the street map
+        // smears into streaks
+        if (this.aniso)
+          gl.texParameterf(gl.TEXTURE_2D, this.aniso.TEXTURE_MAX_ANISOTROPY_EXT, this.anisoMax);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);

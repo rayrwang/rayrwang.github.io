@@ -2066,10 +2066,13 @@ function tick(ts) {
     updateFlyHint();
     updatePhasePanel();
     { // camera readout: 4 decimals ~ 11 m, enough to relocate a view
+      const cg = terrainAt(cam.lat, cam.lon);
       const t = cam.lat.toFixed(4) + ", " + cam.lon.toFixed(4)
-        + " · " + fmtAlt(cam.alt) + " MSL";
+        + "<br>" + fmtAlt(cam.alt) + " MSL · "
+        + (cg == null ? "..." : fmtAlt(Math.max(0, cam.alt - cg))) + " AGL"
+        + "<br>" + cam.yaw.toFixed(0) + "&deg; / " + cam.pitch.toFixed(0) + "&deg;";
       const el = $("camPos");
-      if (el.textContent !== t) el.textContent = t;
+      if (el.dataset.t !== t) { el.dataset.t = t; el.innerHTML = t; }
     }
     globe.render();
   }
