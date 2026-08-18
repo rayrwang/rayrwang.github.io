@@ -132,6 +132,45 @@
       border:1px solid rgba(255,255,255,.18); white-space:nowrap; }
   #icbmBar:hover { background:rgba(59,130,246,.35); color:#fff; }
   #icbmDlg .row { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; }
+  /* the exchange dialogue: same shape as the missile one, plus a chip list
+     for however many countries are being aimed at */
+  #nukeDlg { position:absolute; z-index:30; top:16%; left:50%;
+      transform:translateX(-50%); width:360px; display:none; max-height:74vh;
+      overflow-y:auto; }
+  #nukeDlg h2 { font-size:14px; margin:0 0 3px; color:#fff; }
+  #nukeDlg .row { display:flex; gap:8px; justify-content:flex-end; margin-top:8px; }
+  #nukeCountry { width:100%; box-sizing:border-box; padding:6px 10px; border-radius:8px;
+      border:1px solid rgba(255,255,255,.25); background:#1c2128; color:#eee; outline:none; }
+  #nukeCountryResults div { padding:6px 10px; background:rgba(28,33,40,.95); color:#ddd;
+      cursor:pointer; border-top:1px solid rgba(255,255,255,.06); }
+  #nukeCountryResults div:hover { background:rgba(59,130,246,.35); }
+  #nukeChips { display:flex; flex-wrap:wrap; gap:4px; margin:6px 0 0;
+      max-height:96px; overflow-y:auto; }
+  .chip { font-size:11px; padding:2px 7px; border-radius:10px; cursor:pointer;
+      background:rgba(246,173,85,.18); border:1px solid rgba(246,173,85,.45);
+      color:#f6ad55; white-space:nowrap; }
+  .chip:hover { background:rgba(246,173,85,.35); color:#fff; }
+  #nukeBar { position:absolute; top:48px; left:50%; transform:translateX(-50%);
+      z-index:19; display:none; cursor:pointer; padding:5px 12px; font-size:12px;
+      background:rgba(16,18,22,.88); color:#f6ad55; border-radius:8px;
+      border:1px solid rgba(255,255,255,.18); white-space:nowrap; }
+  #nukeBar:hover { background:rgba(59,130,246,.35); color:#fff; }
+  /* the exchange legend: two columns of coloured rows rather than one
+     paragraph that rewraps on every count change */
+  /* fills DOWN the left column first, so the four state rows stay together
+     on the left and the four damage bands on the right; row-wise flow
+     interleaved them, which read as nothing in particular */
+  .exLegend { display:grid; grid-auto-flow:column; grid-template-rows:repeat(4, auto);
+      grid-template-columns:repeat(2, minmax(0, 1fr)); gap:0 18px; }
+  .exLegend .zoneKey { margin:2px 0 0; }
+  @media (max-width: 760px) {
+    .exLegend { grid-auto-flow:row; grid-template-columns:1fr;
+        grid-template-rows:none; }
+  }
+  /* the exchange's own flight-data rows take the panel over while it runs */
+  #hudEx { display:none; }
+  #hud.exch #hudEx { display:block; }
+  #hud.exch > .hudrow { display:none; }
   /* one coloured dot beside each description, matching the ring on the map */
   .zoneKey { display:flex; align-items:flex-start; gap:7px; margin:4px 0 0;
       font-size:11px; line-height:1.35; text-align:left; }
@@ -222,6 +261,31 @@
   </div>
 </div>
 
+<div id="nukeBar"></div>
+<div id="nukeDlg" class="panel">
+  <h2>Nuclear exchange</h2>
+  <div class="hint">Every warhead one country has, launched at once, at the
+    cities of whichever countries you pick. Biggest cities take the most.</div>
+  <label><span>Launching</span><select id="nukeSrc"></select></label>
+  <label><span>How many</span><select id="nukeCount">
+    <option value="deployed" selected>Deployed and ready</option>
+    <option value="stock">The whole stockpile</option>
+  </select></label>
+  <div class="hint" id="nukeSrcNote" style="margin:3px 0 7px"></div>
+  <input id="nukeCountry" type="text" placeholder="Target country..." autocomplete="off" spellcheck="false">
+  <div id="nukeCountryResults"></div>
+  <div id="nukeChips"></div>
+  <div class="row" style="justify-content:flex-start">
+    <button class="small" id="nukeAll">Everywhere</button>
+    <button class="small" id="nukeNone">Clear</button>
+  </div>
+  <div class="hint" id="nukePlan" style="margin-top:6px"></div>
+  <div class="row">
+    <button class="small" id="nukeCancel">Close</button>
+    <button id="nukeGo" disabled>Launch</button>
+  </div>
+</div>
+
 <div id="ctl" class="panel">
   <div class="panelHead" id="ctlHead"><h1>Trajectory simulator</h1><span class="caret">&#9662;</span></div>
   <div class="hint" id="stateHint">Click the map, then left click to set the launch point.</div>
@@ -238,6 +302,7 @@
       <option value="sound">Sound of a Krakatoa-sized bang</option>
       <option value="manhole">Manhole cover, Pascal-B (1957)</option>
       <option value="icbm">ICBM, city to city</option>
+      <option value="exchange">Nuclear exchange, country to country</option>
       <option value="newton">Newton's cannonball (Everest)</option>
       <option value="falcon9">Falcon 9, ascent to orbit</option>
       <option value="iss">ISS, released in orbit</option>
@@ -337,6 +402,18 @@
   <div class="hudrow"><span>Track dist.</span><span id="hudTrack">&ndash;</span></div>
   <div class="hudrow"><span>Mach &middot; Cd</span><span id="hudMach">&ndash;</span></div>
   <div class="hudrow"><span title="the object's clock against a clock at the launch pad: speed slows it (special relativity), altitude speeds it (general relativity)">Proper time</span><span id="hudTau">&ndash;</span></div>
+  <!-- an exchange has no single object, so it replaces the per-object rows
+       with its own counts rather than borrowing their labels -->
+  <div id="hudEx">
+    <div class="hudrow"><span>Phase</span><b id="exPhase">&ndash;</b></div>
+    <div class="hudrow"><span>Warheads</span><span id="exTotal">&ndash;</span></div>
+    <div class="hudrow"><span>Boosting</span><span id="exBoost">&ndash;</span></div>
+    <div class="hudrow"><span>Coasting</span><span id="exCoast">&ndash;</span></div>
+    <div class="hudrow"><span>Reentering</span><span id="exReentry">&ndash;</span></div>
+    <div class="hudrow"><span>Carried by air</span><span id="exAirN">&ndash;</span></div>
+    <div class="hudrow"><span>Impacted</span><span id="exHitN">&ndash;</span></div>
+    <div class="hudrow"><span>Highest apogee</span><span id="exApogee">&ndash;</span></div>
+  </div>
   <!-- the checkbox stayed as the follow state's carrier when its row was
        replaced by the follow button below the panel; F and the button both
        drive it -->
@@ -743,6 +820,26 @@ const PRESETS = {
       { prop: 3000,  dry: 300,  isp: 290, ispSL: 290, thr: 150000 },
     ],
   },
+  // A whole arsenal at once. This preset does not use the launch ladder at
+  // all: the dialogue asks who is shooting and at which countries, and the
+  // exchange engine (search "nuclear exchange" below) flies every warhead on
+  // analytic arcs. The physics fields here exist so the panel has something
+  // consistent to show; nothing in makeState ever runs for it.
+  exchange: {
+    ptype: "icbm",
+    exchange: true,
+    targeted: true, noAngle: true,
+    speed: 0, angle: 90, relH: 0, dt: 0.05, drag: true,
+    timeSpeed: 1,      // real time (RW): a salvo takes half an hour, and the
+                       // arrow keys are right there when that is too long
+    area: 3.6, rvMass: 400, rvDiam: 0.55, rvCd: 0.15, busMass: 600,
+    vertUntil: 8, progUntil: 70, sepDelay: 1.5,
+    stages: [
+      { prop: 26000, dry: 2400, isp: 265, ispSL: 240, thr: 800000 },
+      { prop: 7000,  dry: 700,  isp: 288, ispSL: 288, thr: 270000 },
+      { prop: 3000,  dry: 300,  isp: 290, ispSL: 290, thr: 150000 },
+    ],
+  },
   // Newton's cannonball (Principia / De mundi systemate): fire horizontally
   // from the highest mountain at increasing speeds and the arc becomes an
   // orbit becomes escape. AIR RESISTANCE IS OFF BY DEFAULT because the
@@ -848,6 +945,172 @@ const ZONE_COLORS = {
   severe: [0.97, 0.45, 0.06, 0.50],
   burns:  [0.98, 0.86, 0.18, 0.40],
   light:  [0.62, 0.65, 0.69, 0.32],
+};
+
+/* ---------- the nine nuclear powers ----------
+ * Warhead counts are the open estimates (Federation of American Scientists
+ * "Status of World Nuclear Forces" / SIPRI, 2025): `stock` is the whole
+ * military stockpile, `deployed` the part actually on missiles ready to fly.
+ * The simulation launches the STOCKPILE, which is the upper bound rather
+ * than the realistic one, and the panel says so.
+ *
+ * Launch sites are a HAND-DRAWN plausible mix, not a target list. For the
+ * United States, Russia, France and the United Kingdom the strategic bases
+ * are published and the coordinates are the real ones. China's silo fields
+ * were identified in commercial satellite imagery from 2021 onward and are
+ * given at field centre. India, Pakistan, Israel and North Korea do not
+ * publish basing, and those entries are informed estimates from open
+ * reporting: treat them as "somewhere around here", not as intelligence.
+ *
+ * `mirv` is the typical number of warheads one missile carries, which sets
+ * how many rise together; `kt` is the yield of that country's usual
+ * strategic warhead. */
+// Each site carries its LEG, because the three legs of a triad do genuinely
+// different things and it shows on the map:
+//   silo   - fires from the spot given, on a ballistic arc
+//   sub    - fires from a PATROL AREA at sea, not from the home port a
+//            submarine left weeks earlier. `r` is the radius of the box
+//            boats are scattered in, so the launch points come out of open
+//            water and the shorter range gets them there first
+//   bomber - carries its weapons there. No ballistic arc at all: the
+//            aircraft flies a great circle at cruise speed and the warhead
+//            arrives hours after the missiles, which is the real shape of
+//            the thing (see EX_AIR_SPEED)
+const NUKE_POWERS = {
+  ru: { name: "Russia", stock: 4309, deployed: 1718, kt: 500, mirv: 4,
+    wh: "typical Russian strategic warhead, ~500 kt (Yars, SS-18 class)",
+    sites: [
+      { n: "Uzhur (62nd Missile Division)",      lat: 55.31, lon: 89.83, w: 3, k: "silo", r: 70000 },
+      { n: "Dombarovsky (13th, Yasny)",          lat: 51.05, lon: 59.85, w: 3, k: "silo", r: 70000 },
+      { n: "Tatishchevo (60th)",                 lat: 51.66, lon: 45.55, w: 3, k: "silo", r: 60000 },
+      { n: "Kozelsk (28th)",                     lat: 54.03, lon: 35.78, w: 2, k: "silo", r: 55000 },
+      { n: "Teykovo (54th)",                     lat: 56.86, lon: 40.54, w: 2, k: "silo", r: 45000 },
+      { n: "Yoshkar-Ola (14th)",                 lat: 56.63, lon: 47.89, w: 2, k: "silo", r: 45000 },
+      { n: "Novosibirsk (39th)",                 lat: 55.20, lon: 82.90, w: 2, k: "silo", r: 45000 },
+      { n: "Barnaul (35th)",                     lat: 53.36, lon: 83.76, w: 2, k: "silo", r: 45000 },
+      { n: "Irkutsk (29th)",                     lat: 52.28, lon: 104.28, w: 2, k: "silo", r: 45000 },
+      { n: "Vypolzovo (7th)",                    lat: 57.85, lon: 33.60, w: 1, k: "silo", r: 40000 },
+      { n: "Nizhny Tagil (42nd)",                lat: 57.90, lon: 60.00, w: 1, k: "silo", r: 40000 },
+      { n: "Barents Sea bastion (Northern Fleet SSBNs)",
+                                                 lat: 74.0, lon: 38.0, w: 1, k: "sub", r: 320000 },
+      { n: "Kara Sea patrol (Northern Fleet SSBNs)",
+                                                 lat: 76.5, lon: 62.0, w: 1, k: "sub", r: 300000 },
+      { n: "Greenland Sea patrol (Northern Fleet SSBNs)",
+                                                 lat: 76.0, lon: 5.0, w: 1, k: "sub", r: 320000 },
+      { n: "Sea of Okhotsk bastion (Pacific Fleet SSBNs)",
+                                                 lat: 54.5, lon: 149.5, w: 1, k: "sub", r: 280000 },
+      { n: "Kamchatka approaches (Pacific Fleet SSBNs)",
+                                                 lat: 50.0, lon: 160.0, w: 1, k: "sub", r: 300000 },
+      { n: "Engels-2 (Tu-95/Tu-160 bombers)",    lat: 51.48, lon: 46.21, w: 1, k: "bomber" },
+      { n: "Ukrainka (Tu-95 bombers)",           lat: 51.17, lon: 128.45, w: 1, k: "bomber" },
+      // Russia's own sharing arrangement: tactical weapons moved to Belarus
+      // from 2023, announced by both governments, stored and delivered by
+      // Belarusian Su-25s and Iskander launchers
+      { n: "Asipovichy, Belarus (forward-deployed)", lat: 53.30, lon: 28.64, w: 1, k: "silo", c: "Belarus" },
+      { n: "Lida, Belarus (forward-deployed)",   lat: 53.88, lon: 25.30, w: 1, k: "bomber", c: "Belarus" },
+    ] },
+  us: { name: "United States", stock: 3700, deployed: 1670, kt: 300, mirv: 3,
+    wh: "W87/W88, 300-475 kt (Minuteman III, Trident II)",
+    sites: [
+      { n: "Minot AFB, North Dakota",            lat: 48.4159, lon: -101.3306, w: 3, k: "silo", r: 65000 },
+      { n: "Malmstrom AFB, Montana",             lat: 47.5050, lon: -111.1830, w: 3, k: "silo", r: 85000 },
+      { n: "F.E. Warren AFB, Wyoming",           lat: 41.1320, lon: -104.8670, w: 3, k: "silo", r: 75000 },
+      { n: "Northeast Pacific patrol (Bangor SSBNs)", lat: 44.0, lon: -142.0, w: 1, k: "sub", r: 450000 },
+      { n: "Central Pacific patrol (Bangor SSBNs)", lat: 32.0, lon: -160.0, w: 1, k: "sub", r: 500000 },
+      { n: "Western Pacific patrol (Bangor SSBNs)", lat: 28.0, lon: 176.0, w: 1, k: "sub", r: 450000 },
+      { n: "Northwest Atlantic patrol (Kings Bay SSBNs)",
+                                                 lat: 39.0, lon: -55.0, w: 1, k: "sub", r: 450000 },
+      { n: "Mid-Atlantic patrol (Kings Bay SSBNs)",
+                                                 lat: 30.0, lon: -40.0, w: 1, k: "sub", r: 500000 },
+      { n: "Norwegian Sea patrol (Kings Bay SSBNs)",
+                                                 lat: 66.0, lon: -5.0, w: 1, k: "sub", r: 380000 },
+      { n: "Eastern Atlantic patrol (Kings Bay SSBNs)",
+                                                 lat: 48.0, lon: -22.0, w: 1, k: "sub", r: 420000 },
+      { n: "Whiteman AFB, Missouri (B-2)",       lat: 38.7300, lon: -93.5480, w: 1, k: "bomber" },
+      { n: "Barksdale AFB, Louisiana (B-52)",    lat: 32.5018, lon: -93.6627, w: 1, k: "bomber" },
+      // NATO nuclear sharing: American B61 gravity bombs sit in vaults on
+      // allied soil, to be carried by that country's own aircraft. The bases
+      // are long-reported (FAS Nuclear Notebook) and several host governments
+      // have since said so themselves.
+      // `c` is the country the base SITS IN, which is not the country that
+      // owns the weapons: that is the whole point of sharing, and it means
+      // these get struck when their host is the one being shot at
+      { n: "Büchel AB, Germany (B61 sharing)",   lat: 50.17, lon: 7.06, w: 1, k: "bomber", c: "Germany" },
+      { n: "Kleine Brogel AB, Belgium (B61 sharing)", lat: 50.76, lon: 5.47, w: 1, k: "bomber", c: "Belgium" },
+      { n: "Volkel AB, Netherlands (B61 sharing)", lat: 51.66, lon: 5.71, w: 1, k: "bomber", c: "Netherlands" },
+      { n: "Aviano AB, Italy (B61 sharing)",     lat: 46.03, lon: 12.60, w: 1, k: "bomber", c: "Italy" },
+      { n: "Ghedi AB, Italy (B61 sharing)",      lat: 45.43, lon: 10.28, w: 1, k: "bomber", c: "Italy" },
+      { n: "Incirlik AB, Turkey (B61 sharing)",  lat: 37.00, lon: 35.43, w: 1, k: "bomber", c: "Turkey" },
+      { n: "RAF Lakenheath, UK (B61 mission restored)", lat: 52.41, lon: 0.56, w: 1, k: "bomber", c: "United Kingdom" },
+    ] },
+  cn: { name: "China", stock: 600, deployed: 24, kt: 300, mirv: 3,
+    wh: "DF-41 class, estimated 250-500 kt",
+    sites: [
+      { n: "Yumen silo field, Gansu",            lat: 40.42, lon: 97.20, w: 3, k: "silo", r: 40000 },
+      { n: "Hami silo field, Xinjiang",          lat: 41.85, lon: 93.60, w: 3, k: "silo", r: 40000 },
+      { n: "Ordos silo field, Inner Mongolia",   lat: 38.30, lon: 109.20, w: 3, k: "silo", r: 45000 },
+      { n: "Jilantai",                           lat: 39.75, lon: 105.70, w: 1, k: "silo", r: 25000 },
+      { n: "Delingha, Qinghai",                  lat: 37.37, lon: 97.37, w: 2, k: "silo", r: 35000 },
+      { n: "Wuzhai, Shanxi",                     lat: 38.85, lon: 111.60, w: 1, k: "silo", r: 25000 },
+      { n: "South China Sea bastion (Jin-class SSBNs)",
+                                                 lat: 17.5, lon: 114.5, w: 2, k: "sub", r: 300000 },
+      { n: "Neixiang (H-6N bombers)",            lat: 33.13, lon: 112.05, w: 1, k: "bomber" },
+    ] },
+  fr: { name: "France", stock: 290, deployed: 280, kt: 300, mirv: 6,
+    wh: "TN 75 / TNA, roughly 100-300 kt",
+    sites: [
+      { n: "Bay of Biscay approaches (Le Triomphant SSBNs)",
+                                                 lat: 45.5, lon: -12.0, w: 1, k: "sub", r: 320000 },
+      { n: "Northeast Atlantic patrol (Le Triomphant SSBNs)",
+                                                 lat: 52.0, lon: -20.0, w: 1, k: "sub", r: 380000 },
+      { n: "Saint-Dizier AB 113 (Rafale, ASMP-A)", lat: 48.63, lon: 4.90, w: 1, k: "bomber" },
+      { n: "Istres AB 125",                      lat: 43.52, lon: 4.92, w: 1, k: "bomber" },
+      { n: "Avord AB 702",                       lat: 47.05, lon: 2.63, w: 1, k: "bomber" },
+    ] },
+  gb: { name: "United Kingdom", stock: 225, deployed: 120, kt: 100, mirv: 8,
+    wh: "Holbrook, about 100 kt (US W76 derivative)",
+    sites: [
+      { n: "Rockall Trough patrol (Vanguard SSBNs)",
+                                                 lat: 56.5, lon: -14.0, w: 1, k: "sub", r: 300000 },
+      { n: "Iceland-Faroe gap patrol (Vanguard SSBNs)",
+                                                 lat: 62.5, lon: -10.0, w: 1, k: "sub", r: 300000 },
+    ] },
+  in: { name: "India", stock: 172, deployed: 0, kt: 40, mirv: 1,
+    wh: "estimated 12-40 kt fission/boosted; Agni-V possibly larger",
+    sites: [
+      { n: "Ambala area (air base)",             lat: 30.37, lon: 76.82, w: 1, k: "bomber" },
+      { n: "Gwalior area (air base)",            lat: 26.29, lon: 78.23, w: 1, k: "bomber" },
+      { n: "Jodhpur area (missile group)",       lat: 26.25, lon: 73.05, w: 1, k: "silo" },
+      { n: "Secunderabad area (missile group)",  lat: 17.44, lon: 78.50, w: 2, k: "silo" },
+      { n: "Bay of Bengal patrol area (Arihant SSBNs)",
+                                                 lat: 15.0, lon: 87.0, w: 1, k: "sub", r: 250000 },
+    ] },
+  pk: { name: "Pakistan", stock: 170, deployed: 0, kt: 40, mirv: 1,
+    wh: "estimated 5-40 kt",
+    sites: [
+      { n: "Sargodha / Kirana Hills",            lat: 32.05, lon: 72.67, w: 3, k: "silo" },
+      { n: "Akro, Petaro",                       lat: 25.30, lon: 68.30, w: 1, k: "silo" },
+      { n: "Gujranwala area",                    lat: 32.18, lon: 74.19, w: 1, k: "silo" },
+      { n: "Pano Aqil",                          lat: 27.85, lon: 69.10, w: 1, k: "silo" },
+      { n: "Masroor AB, Karachi",                lat: 24.89, lon: 66.94, w: 1, k: "bomber" },
+      { n: "Khuzdar area",                       lat: 27.80, lon: 66.60, w: 1, k: "silo" },
+    ] },
+  il: { name: "Israel", stock: 90, deployed: 0, kt: 60, mirv: 1,
+    wh: "undeclared; open estimates put it in the tens of kilotons",
+    sites: [
+      { n: "Sdot Micha (Jericho missile base)",  lat: 31.72, lon: 34.92, w: 3, k: "silo" },
+      { n: "Tel Nof AB",                         lat: 31.84, lon: 34.82, w: 1, k: "bomber" },
+      { n: "Eastern Mediterranean patrol (Dolphin-class)",
+                                                 lat: 33.5, lon: 31.5, w: 1, k: "sub", r: 200000 },
+    ] },
+  kp: { name: "North Korea", stock: 50, deployed: 0, kt: 50, mirv: 1,
+    wh: "estimated; the 2017 test measured 140-250 kt, a deliverable warhead less",
+    sites: [
+      { n: "Sino-ri missile base",               lat: 39.65, lon: 125.42, w: 1, k: "silo" },
+      { n: "Sangnam-ni (Hoejung-ni)",            lat: 39.78, lon: 126.42, w: 1, k: "silo" },
+      { n: "Yeongjeo-dong",                      lat: 41.65, lon: 128.15, w: 1, k: "silo" },
+      { n: "Sohae, Tongchang-ri",                lat: 39.66, lon: 124.71, w: 1, k: "silo" },
+    ] },
 };
 
 // Fields the presets manage; editing any of them marks the preset "modified".
@@ -1618,6 +1881,17 @@ let lastFlyHint = "";
 function flyHintHtml() {
   const pr = PRESETS[$("preset").value] || {};
   const oneClick = !!pr.aimless && +$("speed").value === 0;   // same test placeLaunch uses
+  if (pr.exchange) {
+    if (exch && exch.running)
+      return "Exchange under way &middot; fly where you like, <b>T</b> pauses, "
+        + "<b>arrow left/right</b> changes time speed. The whole force left at once, "
+        + "so what you are watching is geometry: the near targets go first.";
+    if (exch)
+      return "Exchange complete &middot; the rings stay on the map. "
+        + "Pick another preset to clear them, or set up another exchange.";
+    return "Nothing to place: open the <b>exchange dialogue</b> to choose who "
+      + "launches and at which countries." + (locked ? " <b>Esc</b> opens the menu." : "");
+  }
   if (!locked && !isTouch)
     return "<b>Click the map</b> to fly: mouse looks, <b>W</b> flies where you look "
       + "(<b>A/D</b> strafe, <b>Space</b> climbs, <b>Shift</b> descends, <b>Alt</b> or "
@@ -1733,7 +2007,25 @@ function phaseHtml(s) {
 }
 function updatePhasePanel() {
   const el = $("phasePanel");
-  if (sim && simStatus === "flying" && !sim.preview) {
+  if (exch) {
+    el.innerHTML = exchangePhaseHtml();
+    el.style.display = "block";
+    // the exchange never goes through updateHud (there is no single object to
+    // report), so the clock and its own panel rows are driven from here
+    const t = exch.t, tenths = Math.floor((t - Math.floor(t)) * 10);
+    $("clock").innerHTML = fmtClock(t) + (t < 3600 ? `<small>.${tenths}</small>` : "");
+    $("hud").classList.add("exch");
+    const p = exch.ph || {}, N = n => (n || 0).toLocaleString();
+    $("exPhase").textContent = !exch.running ? "all down"
+      : p.boost ? "boost" : p.reentry ? "reentry" : p.coast ? "midcourse" : "in transit";
+    $("exTotal").textContent = N(exch.shots.length);
+    $("exBoost").textContent = N(p.boost);
+    $("exCoast").textContent = N(p.coast);
+    $("exReentry").textContent = N(p.reentry);
+    $("exAirN").textContent = N(p.air);
+    $("exHitN").textContent = N(exch.hit);
+    $("exApogee").textContent = fmtAlt(exch.apogee);
+  } else if (sim && simStatus === "flying" && !sim.preview) {
     el.innerHTML = phaseHtml(sim);
     el.style.display = "block";
   } else el.style.display = "none";
@@ -1781,6 +2073,8 @@ function updateGhost() {
 }
 
 function placeLaunch(lat, lon) {
+  // the exchange has no launch point to place: it is set up in its dialogue
+  if (PRESETS[$("preset").value]?.exchange) { nukeOpen(); return; }
   // a targeted preset needs its target before anything else can happen
   if (PRESETS[$("preset").value]?.targeted && !icbmArmed) { icbmOpen(!!icbmTarget); return; }
   clearRun();
@@ -2171,7 +2465,9 @@ function updateWallClock() {
   // clamps at 250 ms): a stalled or hidden frame must not starve the
   // clock, and at 1x the idle clock then tracks real time exactly
   const nowReal = Date.now();
-  if (sim && simStatus === "flying" && launchEpoch != null)
+  if (exch && exch.running && launchEpoch != null)
+    wallMs = launchEpoch + exch.t * 1000;
+  else if (sim && simStatus === "flying" && launchEpoch != null)
     wallMs = launchEpoch + sim.t * 1000;
   else if (lastWallReal != null)
     wallMs += (nowReal - lastWallReal) * (+$("timeSpeed").value || 1);
@@ -2190,6 +2486,12 @@ let objMarker = null, landMarker = null;
 let trackShadow = null, track3d = null, velArrowState = null;
 
 function clearRun() {
+  if (exch) {
+    exch = null;
+    globe.clearZoneField();
+    for (const n of ["exObj", "exAir", "exHit", "exZone", "exSilo"]) globe.clearPoints(n);
+    $("hud").classList.remove("exch");
+  }
   if (objMarker) { objMarker.remove(); objMarker = null; }
   if (landMarker) { landMarker.remove(); landMarker = null; }
   globe.clearLines("shadow"); globe.clearLines("shadowtail");
@@ -3103,6 +3405,9 @@ function tick(ts) {
     }
     globe.render();
   }
+  // the exchange is its own engine: analytic arcs, thousands of objects, and
+  // no per-step integration to carry, so it steps straight off the frame time
+  if (exch) { exchangeStep(realDt); return; }
   if (!sim || !playing || simStatus !== "flying") return;
   const s = sim, speed = +$("timeSpeed").value;
   // the missile changes step size between boost, coast and reentry
@@ -3441,6 +3746,13 @@ function applyPreset(name) {
   } else if (pr.orbital) {
     $("aimNote").textContent = "Click a ground point and aim a heading: it deploys "
       + "400 km overhead at circular orbital speed. No launch angle.";
+  } else if (pr.exchange) {
+    $("aimNote").innerHTML = "Nothing to aim: pick who is shooting and what "
+      + "they are shooting at. <button class=\"small\" id=\"nukeEdit\" "
+      + "style=\"margin-top:4px\">Set up the exchange</button>";
+    const b = $("nukeEdit");
+    if (b) b.onclick = ev => { ev.preventDefault(); nukeOpen(); };
+    nukeOpen();
   } else if (pr.targeted) {
     icbmAimNote();
     if (!icbmTarget) icbmOpen();     // the target is not optional
@@ -3450,7 +3762,14 @@ function applyPreset(name) {
   }
   // no function call here: applyPreset runs at load, before the missile
   // module's own bindings exist, and touching one of those would throw
-  if (!pr.targeted) { $("icbmDlg").style.display = "none"; $("icbmBar").style.display = "none"; }
+  if (!pr.targeted || pr.exchange) {
+    $("icbmDlg").style.display = "none"; $("icbmBar").style.display = "none";
+  }
+  if (!pr.exchange) {
+    const d = $("nukeDlg"), b = $("nukeBar");
+    if (d) d.style.display = "none";
+    if (b) b.style.display = "none";
+  }
   const dm = $("dragModelOut");
   if (dm) dm.textContent = pr.dragModel && pr.dragModel !== "fixed"
     ? pr.dragModel.toUpperCase() + " curve, BC " + pr.bc
@@ -3994,6 +4313,686 @@ function icbmImpactReport(s, ll) {
   icbmDrawZones(ll[0], ll[1]);
 }
 
+/* ---------- nuclear exchange ----------
+ * Thousands of warheads at once, which changes the model. A single ICBM here
+ * is integrated step by step with boost, guidance, drag and terrain (the
+ * `icbm` preset above); doing that four thousand times over would be tens of
+ * millions of RK4 steps a second. So an exchange flies the thing a ballistic
+ * missile actually is between burnout and reentry: a KEPLER ELLIPSE. Each
+ * warhead's arc is solved once, from its silo to its aim point, by the same
+ * vreqAtAngle/icbmRequired code the single missile uses to steer, and then
+ * propagated in closed form. Two honest consequences, both stated in the
+ * panel: the boost phase is not flown (so a flight time here runs a couple
+ * of minutes short of the full simulation's, measured Minot-Moscow 29.5 min
+ * against 32.0), and there is no reentry drag, so every warhead lands exactly
+ * on its aim point instead of a few tens of metres off.
+ *
+ * Displayed deliberately thin, at RW's ruling: launch points, one dot per
+ * object in flight, and the crosses and damage rings where they land. No
+ * tracks, no velocity arrows, no drop lines: at this count they are a wall
+ * of ink that hides the thing itself. */
+let exch = null;
+const EX_SPREAD = 2500;        // m: laydown spacing on a multi-warhead city
+const EX_CAP = 10;             // warheads on any one city, however big it is:
+                               // a low ceiling is what keeps a big arsenal
+                               // from piling onto a handful of metros (RW)
+const EX_TILT = 0.25;          // how steeply allocation follows city rank.
+                               // 0 = every city alike, 0.5 = the Zipf-ish
+                               // gradient the first version used, which put
+                               // everything on the top few
+const EX_BOOST = { silo: 180, sub: 150 };  // s to burnout: a cold-launched
+                               // SLBM is a shorter, flatter burn than a silo
+const EX_BURN_ALT = 200000;    // m: where a strategic missile stops burning
+const EX_BURN_DOWN = 90000;    // m downrange by then
+const EX_AIR_SPEED = 240;      // m/s: a bomber cruises at about 860 km/h, so
+const EX_AIR_ALT = 11000;      // its weapons arrive HOURS after the missiles
+const EX_REENTRY = 100000;     // m: altitude where the air starts to matter
+// how far launch points scatter around a site when it does not say for
+// itself: a silo field or a mobile-launcher area covers a lot of ground, an
+// air base is one runway
+const EX_FIELD = { silo: 55000, bomber: 3000, sub: 400000 };
+
+// deterministic pseudo-random (a run must repeat exactly for the tests)
+function exRand(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+// Kepler elements of the ballistic arc from a burnout state to a target.
+// The frame is the one icbmRequired works in: inertial, coinciding with ECEF
+// at time `tOff`, so a point fixed to the ground has rotated by OMEGA*t by
+// the time the warhead gets there.
+function exArc(r0, aim, tOff) {
+  const sol = icbmRequired(r0, aim);
+  if (!sol || !(sol.a > 0)) return null;
+  const v0 = sol.v, r0n = V3.norm(r0), v2 = V3.dot(v0, v0);
+  const a = 1 / (2 / r0n - v2 / GM);
+  const rv = V3.dot(r0, v0);
+  // eccentricity vector: points at periapsis, length e
+  const ev = V3.scale(V3.sub(V3.scale(r0, v2 - GM / r0n), V3.scale(v0, rv)), 1 / GM);
+  const ecc = V3.norm(ev);
+  if (!(ecc > 1e-6) || ecc >= 1) return null;
+  const P = V3.scale(ev, 1 / ecc);
+  const W = V3.unit(V3.cross(r0, v0));
+  const Q = V3.cross(W, P);
+  const nu0 = Math.atan2(V3.dot(r0, Q), V3.dot(r0, P));
+  const E0 = 2 * Math.atan2(Math.sqrt(1 - ecc) * Math.sin(nu0 / 2),
+                            Math.sqrt(1 + ecc) * Math.cos(nu0 / 2));
+  return { a, ecc, P, Q, n: Math.sqrt(GM / (a * a * a)), v0,
+           M0: E0 - ecc * Math.sin(E0), tof: sol.tof,
+           apogee: sol.apogee, tOff: tOff || 0 };
+}
+// where the arc is, τ seconds after burnout, in ECEF
+function exArcAt(arc, tau) {
+  const M = arc.M0 + arc.n * tau;
+  let E = M + arc.ecc * Math.sin(M);          // standard first guess
+  for (let i = 0; i < 8; i++) {
+    const d = 1 - arc.ecc * Math.cos(E);
+    const step = (E - arc.ecc * Math.sin(E) - M) / d;
+    E -= step;
+    if (Math.abs(step) < 1e-12) break;
+  }
+  const x = arc.a * (Math.cos(E) - arc.ecc);
+  const y = arc.a * Math.sqrt(1 - arc.ecc * arc.ecc) * Math.sin(E);
+  const inert = V3.add(V3.scale(arc.P, x), V3.scale(arc.Q, y));
+  return rotZ(inert, -OMEGA * (arc.tOff + tau));   // back into the turning frame
+}
+
+/* ---- the three phases of a warhead's flight ----
+ * BOOST is approximated rather than integrated: a real ascent is a gravity
+ * turn under thrust, and four thousand of them would be tens of millions of
+ * RK4 steps a second. Instead the missile follows a Hermite curve from the
+ * pad to its burnout point, leaving vertically and arriving along the exact
+ * velocity the ballistic arc needs. That is the right shape (straight up,
+ * then pitching over downrange) with the right endpoints, and it costs
+ * nothing per frame. Burnout is put where a strategic missile really stops
+ * burning: about 200 km up and 90 km downrange, three minutes in.
+ * MIDCOURSE is exact: a Kepler ellipse, solved from the burnout state.
+ * REENTRY keeps that ellipse for position (an RV's ballistic coefficient is
+ * near 10,000 kg/m^2, so the air bends its path very little) and applies the
+ * drag loss to the arrival SPEED, which is the part you can see in a number:
+ * about 7 km/s at 100 km becomes 2 to 3 at the ground. */
+function exShotFlight(site, padLL, aimLL) {
+  const pad = llToR(padLL[0], padLL[1], padLL[2] || 0);
+  const aim = llToR(aimLL[0], aimLL[1], aimLL[2] || 0);
+  // 1. a first solve straight off the pad, only to learn which way it leaves
+  const rough = icbmRequired(pad, aim);
+  if (!rough) return null;
+  const { east, north, up } = enuAt(pad);
+  const brg = (Math.atan2(V3.dot(rough.v, east), V3.dot(rough.v, north))
+               * 180 / Math.PI + 360) % 360;
+  // Burnout scales with the shot: a missile aimed 300 km away stops burning
+  // low and early, an intercontinental one keeps going to about 200 km and
+  // three minutes. A submarine's cold launch is a shorter burn than a silo's.
+  const range = surfDist(padLL[0], padLL[1], aimLL[0], aimLL[1]);
+  const lerp = Math.max(0, Math.min(1, range / 8e6));
+  const tb = (60 + 120 * lerp) * (site.k === "sub" ? 0.85 : 1);
+  const bAlt = 25000 + (EX_BURN_ALT - 25000) * lerp;
+  const bDown = 10000 + (EX_BURN_DOWN - 10000) * lerp;
+  // 2. burnout point: downrange along that bearing, at burnout altitude, in
+  //    the inertial frame that coincides with ECEF at LAUNCH (so the whole
+  //    flight shares one frame: the pad has itself turned by then)
+  const [blon, blat] = destPoint(padLL[0], padLL[1], brg, bDown);
+  const rbEcef = llToR(blat, blon, bAlt);
+  const arc = exArc(rotZ(rbEcef, OMEGA * tb), rotZ(aim, OMEGA * tb), tb);
+  if (!arc) return null;
+  // 3. the boost curve's end tangent is the burnout velocity, expressed in
+  //    the turning frame the curve is drawn in
+  const vEcef = V3.sub(rotZ(arc.v0, -OMEGA * tb),
+                       V3.cross([0, 0, OMEGA], rbEcef));
+  const span = V3.norm(V3.sub(rbEcef, pad));
+  return { kind: "bal", pad, rb: rbEcef, tb, arc,
+           t0up: V3.scale(up, span * 1.35),
+           t1: V3.scale(V3.unit(vEcef), span * 1.35),
+           tof: tb + arc.tof, apogee: arc.apogee };
+}
+// a bomber's weapons: no arc at all, an aircraft flying a great circle at
+// cruise speed, so they arrive hours behind the missiles
+function exAirFlight(padLL, aimLL) {
+  const d = surfDist(padLL[0], padLL[1], aimLL[0], aimLL[1]);
+  return { kind: "air", d, tof: d / EX_AIR_SPEED,
+           a: [padLL[0], padLL[1]], b: [aimLL[0], aimLL[1]] };
+}
+// position at time t (ECEF), plus which phase of flight that is
+function exPos(f, t) {
+  if (f.kind === "air") {
+    const u = Math.max(0, Math.min(1, t / f.tof));
+    // great-circle interpolation, climbing and descending at the ends
+    const [lo, la] = destPoint(f.a[0], f.a[1],
+      bearingDeg(f.a[0], f.a[1], f.b[0], f.b[1]), f.d * u);
+    const climb = Math.min(1, Math.min(u, 1 - u) * 12);
+    return { p: llToR(la, lo, EX_AIR_ALT * climb), ph: "air" };
+  }
+  if (t < f.tb) {                       // boost: Hermite pad -> burnout
+    const u = t / f.tb, u2 = u * u, u3 = u2 * u;
+    const h00 = 2*u3 - 3*u2 + 1, h10 = u3 - 2*u2 + u;
+    const h01 = -2*u3 + 3*u2, h11 = u3 - u2;
+    return { p: [0, 1, 2].map(i => h00 * f.pad[i] + h10 * f.t0up[i]
+                                 + h01 * f.rb[i] + h11 * f.t1[i]), ph: "boost" };
+  }
+  const p = exArcAt(f.arc, t - f.tb);
+  return { p, ph: V3.norm(p) - R_EARTH < EX_REENTRY ? "reentry" : "coast" };
+}
+// what is left of the arrival speed after the air has had it: an RV enters at
+// close to its orbital-scale speed and lands at a few km/s. Closed-form
+// exponential-atmosphere solution, v = v_e * exp(-rho_0 H / (2 B sin(gamma))),
+// with B the ballistic coefficient, which is the standard first-order answer.
+function exImpactSpeed(vEntry, gammaDeg) {
+  const B = 10000, H = 7200, rho0 = 1.225;
+  const s = Math.max(0.15, Math.sin(Math.abs(gammaDeg) * Math.PI / 180));
+  return vEntry * Math.exp(-rho0 * H / (2 * B * s));
+}
+
+// every city of the chosen countries, biggest first (cities.json is sorted
+// by population globally, so filtering keeps the ranking)
+function exTargets(countries) {
+  if (!CITY_DB) return [];
+  const set = new Set(countries), out = [];
+  for (const c of CITY_DB)
+    if (set.has(c[1])) out.push({ name: c[0], country: c[1], lat: c[2], lon: c[3] });
+  return out;
+}
+// How many warheads each city takes. One apiece down the list first, then the
+// surplus by 1/sqrt(rank): city populations fall off roughly that way, so the
+// largest places take a dozen or two and the tail takes one. A cap stops one
+// megacity swallowing the salvo, and whatever the cap refuses waterfalls down
+// the list rather than vanishing.
+function exAllocate(n, cities) {
+  const m = cities.length;
+  if (!m) return [];
+  const out = new Array(m).fill(0);
+  if (n <= m) { for (let i = 0; i < n; i++) out[i] = 1; return out; }
+  let left = n - m;
+  out.fill(1);
+  const w = i => Math.pow(i + 1, -EX_TILT);
+  let wsum = 0;
+  for (let i = 0; i < m; i++) wsum += w(i);
+  for (let i = 0; i < m && left > 0; i++) {
+    const want = Math.min(EX_CAP - 1, Math.round(left * w(i) / wsum));
+    const take = Math.min(Math.max(0, want), left);
+    out[i] += take; left -= take;
+    wsum -= w(i);
+  }
+  // Leftovers walk the list again, but a no-progress guard is mandatory: a
+  // fixed cap with 4,300 warheads and Canada's 57 cities can never absorb
+  // them, and the first version span forever right there (RW's screen).
+  // Whatever the cities will not take goes to dispersed targets in exPlan.
+  while (left > 0) {
+    let placed = 0;
+    for (let i = 0; i < m && left > 0; i++)
+      if (out[i] < EX_CAP) { out[i]++; left--; placed++; }
+    if (!placed) break;
+  }
+  out.left = left;
+  return out;
+}
+
+/* The target list, in the order a counterforce-then-countervalue plan takes
+ * them. Three kinds, and the first is the self-consistent one (RW): what a
+ * country SHOOTS WITH is what gets shot at when it is on the receiving end,
+ * so Russia's own silo fields are ground zero in an American salvo, and a
+ * shared-weapons base is struck when its HOST country is targeted rather
+ * than the country that owns the bombs.
+ *   cf        - launch sites of any nuclear power among the targets. Two
+ *               warheads each, which is the real convention for a hardened
+ *               silo. Submarines on patrol are not targetable and are skipped.
+ *   city      - population order, most on the biggest, capped at EX_CAP.
+ *   dispersed - what is left over when the cities are full: military sites
+ *               scattered through the country. Without country outlines the
+ *               honest way to scatter them is around the population, which is
+ *               also where the infrastructure is; they never land in the sea
+ *               or across a border by construction. */
+function exPlan(n, countries, rnd) {
+  const aims = [];
+  const set = new Set(countries);
+  for (const p of Object.values(NUKE_POWERS))
+    for (const s of p.sites) {
+      if (s.k === "sub") continue;               // a boat at sea is not a target
+      if (!set.has(s.c || p.name)) continue;
+      for (let i = 0; i < 2 && aims.length < n; i++)
+        aims.push({ lat: s.lat, lon: s.lon, k: "cf",
+                    name: s.n + (s.c ? "" : ", " + p.name), idx: i });
+    }
+  const cities = exTargets(countries);
+  const alloc = exAllocate(Math.max(0, n - aims.length), cities);
+  for (let ci = 0; ci < cities.length; ci++)
+    for (let k = 0; k < alloc[ci] && aims.length < n; k++)
+      aims.push({ lat: cities[ci].lat, lon: cities[ci].lon, k: "city",
+                  name: cities[ci].name, city: ci, idx: k });
+  while (aims.length < n && cities.length) {
+    const c = cities[(rnd() * cities.length) | 0];
+    const [lo, la] = destPoint(c.lat, c.lon, rnd() * 360, 20000 + rnd() * 180000);
+    aims.push({ lat: la, lon: lo, k: "disp", name: "dispersed site", idx: 0 });
+  }
+  return { aims, cities, alloc };
+}
+// where the k-th warhead on a city goes: the first on the centre, the rest on
+// a golden-angle spiral out to about 18 km, which is the shape a real laydown
+// on an urban area has and the reason the damage rings come out lobed
+function exOffset(lat, lon, k) {
+  if (k === 0) return [lat, lon];
+  // the outer limit only binds in the overkill case (a hundred warheads on
+  // one city, which happens when a big arsenal meets a small country)
+  const rad = Math.min(40000, EX_SPREAD * Math.sqrt(k));
+  const [lo, la] = destPoint(lat, lon, (k * 137.508) % 360, rad);
+  return [la, lo];
+}
+
+// what could actually fly: the deployed warheads by default (the ones on
+// missiles), or the whole stockpile including everything in storage. For the
+// powers that keep nothing mated to a missile, "deployed" is the stockpile
+// with a note, because zero would mean nothing launches at all.
+function exCount(P, mode) {
+  return mode === "stock" ? P.stock : (P.deployed || P.stock);
+}
+
+function exBuild(srcKey, countries, mode) {
+  const P = NUKE_POWERS[srcKey];
+  const rnd = exRand(0x5eed);
+  const n = exCount(P, mode);
+  const { aims, cities, alloc } = exPlan(n, countries, rnd);
+  if (!aims.length) return { error: "Nothing to aim at in the chosen countries." };
+  // sites, expanded by weight: a three-field division launches three times
+  // what a single bomber base does
+  const pool = [];
+  P.sites.forEach((s, i) => { for (let k = 0; k < s.w; k++) pool.push(i); });
+  const shots = [];
+  aims.forEach((aim, i) => {
+    const si = pool[i % pool.length];
+    const st = P.sites[si];
+    // a submarine is not at its home port: it is somewhere in a patrol box,
+    // and every boat is somewhere different, so each launch point is drawn
+    // from inside that box (deterministically, so a run repeats)
+    // Nothing launches from a single point. A missile wing's silos are
+    // scattered over thousands of square kilometres of farmland (Malmstrom's
+    // reach ~85 km, Minot's ~65, the Chinese fields ~35), mobile launchers
+    // disperse into the countryside, and a submarine is somewhere in a patrol
+    // box. Only an air base is genuinely one place.
+    const rad = st.r != null ? st.r : EX_FIELD[st.k] || 0;
+    let pl;
+    if (rad > 0) {
+      const [lo, la] = destPoint(st.lat, st.lon, rnd() * 360, rad * Math.sqrt(rnd()));
+      pl = [la, lo, st.k === "sub" ? 0 : (terrainAt(la, lo) ?? 0)];
+    } else pl = [st.lat, st.lon, terrainAt(st.lat, st.lon) ?? 0];
+    // several warheads on one aim point land as a pattern across it, not on
+    // the same square metre; a single one lands on the point
+    const [la, lo] = aim.k === "city" ? exOffset(aim.lat, aim.lon, aim.idx)
+                   : aim.idx ? exOffset(aim.lat, aim.lon, aim.idx) : [aim.lat, aim.lon];
+    shots.push({ si, kind: st.k, city: aim.city, aimKind: aim.k,
+                 name: aim.name, lat: la, lon: lo, pad: pl });
+  });
+  // Everything leaves at once (RW's ruling): a real salvo takes minutes to
+  // empty the fields, but the interesting picture is the whole force in the
+  // air together, and it makes the arrival order pure geometry.
+  let failed = 0;
+  for (const sh of shots) {
+    const st = P.sites[sh.si];
+    const aimLL = [sh.lat, sh.lon, 0];
+    sh.f = st.k === "bomber" ? exAirFlight(sh.pad, aimLL)
+                             : exShotFlight(st, sh.pad, aimLL);
+    if (sh.f) sh.tHit = sh.f.tof; else { sh.tHit = Infinity; failed++; }
+  }
+  const live = shots.filter(s => s.f);
+  const bal = live.filter(s => s.f.kind === "bal");
+  const kinds = { cf: 0, city: 0, disp: 0 };
+  for (const s of live) kinds[s.aimKind]++;
+  return { power: P, key: srcKey, countries, cities, alloc, shots: live, kinds,
+           mode: mode || "deployed", n,
+           dropped: failed, t: 0, hit: 0, running: false,
+           lastImpact: -99, pending: [], crosses: [],
+           legs: { silo: live.filter(s => s.kind === "silo").length,
+                   sub: live.filter(s => s.kind === "sub").length,
+                   bomber: live.filter(s => s.kind === "bomber").length },
+           tFirst: live.reduce((a, s) => Math.min(a, s.tHit), Infinity),
+           tBal: bal.reduce((a, s) => Math.max(a, s.tHit), 0),
+           apogee: bal.reduce((a, s) => Math.max(a, s.f.apogee || 0), 0),
+           tEnd: live.reduce((a, s) => Math.max(a, s.tHit), 0) };
+}
+
+function exchangeStart() {
+  const src = $("nukeSrc").value;
+  const chosen = [...nukeSel];
+  if (!chosen.length || !NUKE_POWERS[src]) return;
+  clearRun();
+  const t0 = performance.now();
+  const e = exBuild(src, chosen, $("nukeCount").value);
+  if (e.error) { setHint(e.error); return; }
+  e.buildMs = performance.now() - t0;
+  exch = e;
+  exch.running = true;
+  playing = true;
+  launchEpoch = wallMs;
+  simStatus = "flying";
+  setPauseUi();
+  // the damage field: one warhead type per shooter, so every burst shares
+  // these four radii and the shader only has to store centres
+  const r = blastRadii(e.power.kt);
+  globe.setZoneField([r.heavy, r.severe, r.burns, r.light],
+    [ZONE_COLORS.heavy, ZONE_COLORS.severe, ZONE_COLORS.burns, ZONE_COLORS.light]);
+  // the launch points as they actually are: every silo and air base at its
+  // own spot, and every submarine wherever in its patrol box it turned out
+  // to be, which is the only honest way to draw a leg that is at sea
+  const seen = new Set(), starts = [];
+  for (const s of e.shots) {
+    const k = s.pad[0].toFixed(3) + "," + s.pad[1].toFixed(3);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    starts.push(s.pad[0], s.pad[1], (s.pad[2] || 0) + 200);
+  }
+  globe.setPoints("exSilo", starts, [0.99, 0.75, 0.25, 0.95], 9, 0);
+  for (const n of ["exObj", "exAir", "exHit", "exZone"]) globe.clearPoints(n);
+  exchangeCamera(e);
+  nukeClose();
+  $("landPanel").style.display = "none";
+  setHint(`${e.shots.length} warheads away from ${e.power.name}.`);
+}
+
+// a viewpoint that holds both ends of the exchange: high over the midpoint
+// between the launching country and the middle of what it is shooting at
+function exchangeCamera(e) {
+  const mid = (arr, f) => {
+    let x = 0, y = 0, z = 0;
+    for (const a of arr) {
+      const [la, lo] = f(a), c = Math.cos(la * Math.PI / 180);
+      x += c * Math.cos(lo * Math.PI / 180); y += c * Math.sin(lo * Math.PI / 180);
+      z += Math.sin(la * Math.PI / 180);
+    }
+    return [Math.atan2(z, Math.hypot(x, y)) * 180 / Math.PI,
+            Math.atan2(y, x) * 180 / Math.PI];
+  };
+  const a = mid(e.power.sites, s => [s.lat, s.lon]);
+  const b = mid(e.cities.slice(0, 200), c => [c.lat, c.lon]);
+  const c = mid([a, b], p => p);
+  const d = surfDist(a[0], a[1], b[0], b[1]);
+  cam.lat = c[0]; cam.lon = c[1];
+  cam.alt = Math.max(1.2e6, Math.min(1.4e7, d * 1.1 + 1.5e6));
+  cam.pitch = -89; cam.yaw = 0;
+  camVel[0] = camVel[1] = camVel[2] = 0;
+  $("followToggle").checked = false;
+}
+
+function exchangeStep(realDt) {
+  const e = exch;
+  if (!e || !e.running || !playing) return;
+  e.t += realDt * (+$("timeSpeed").value || 1);
+  const t = e.t;
+  const xyz = [], air = [];
+  const ph = { boost: 0, coast: 0, reentry: 0, air: 0 };
+  const landed = [];
+  for (const s of e.shots) {
+    if (s.hit) continue;
+    if (t >= s.tHit) { s.hit = true; landed.push(s); continue; }
+    const r = exPos(s.f, t);
+    ph[r.ph]++;
+    // the slow leg is drawn apart from the fast one: a bomber crawling for
+    // ten hours reads as a different animal, which it is
+    (r.ph === "air" ? air : xyz).push(r.p[0], r.p[1], r.p[2]);
+  }
+  if (landed.length) {
+    e.hit += landed.length;
+    for (const s of landed) {
+      e.pending.push([s.lat, s.lon]);
+      e.crosses.push(s.lat, s.lon, (terrainAt(s.lat, s.lon) ?? 0) + GROUND_LIFT);
+    }
+    // batch the field rebuild: a wave can land hundreds of warheads in one
+    // frame, and every rebuild re-uploads the whole grid
+    if (e.pending.length > 40 || t - e.lastImpact > 2) {
+      globe.addZoneImpacts(e.pending);
+      e.pending = []; e.lastImpact = t;
+      exchangeMarks(e);
+    }
+  }
+  globe.setPointsEcef("exObj", xyz, [0.36, 0.7, 1.0, 0.95], 5, 0);
+  globe.setPointsEcef("exAir", air, [0.85, 0.55, 1.0, 0.95], 5, 0);
+  e.ph = ph;
+  e.flying = ph.boost + ph.coast + ph.reentry + ph.air;
+  if (!e.flying) exchangeFinish();
+}
+
+// Impact marks, exactly the single missile's (RW): the areas of effect are
+// the bands painted into the ground by the renderer's zone field, and the
+// aim point is the same red X the landing marker draws. Nothing else. An
+// earlier version added an orange disc per burst so the damage would still
+// read from orbit; at four thousand impacts that was a wall of blobs, and
+// it was not what the ICBM looks like.
+// The one concession to the count: the X is sized off the heavy-blast
+// radius rather than being a fixed 20 px, so it matches the rings it sits
+// in when you are close and shrinks to a dot instead of merging into a red
+// mass when you are looking at a continent.
+function exchangeMarks(e) {
+  const r = blastRadii(e.power.kt);
+  globe.setPoints("exHit", e.crosses, [0.898, 0.243, 0.243, 0.95], 3, 1,
+                  r.heavy, 15);
+}
+
+function exchangeFinish() {
+  const e = exch;
+  e.running = false; playing = false; simStatus = "landed"; setPauseUi();
+  if (e.pending.length) { globe.addZoneImpacts(e.pending); e.pending = []; }
+  exchangeMarks(e);
+  globe.clearPoints("exObj");
+  // ONE completion panel, not two (RW): the bottom legend already carries
+  // the whole story and switches to its finished rows, so the landing panel
+  // every other preset uses stays out of it
+  $("landPanel").style.display = "none";
+  setHint("Exchange complete. Pick another preset to clear the map.");
+}
+
+// one row per fact, with the colour beside it where there is one, so the
+// panel reads as a legend rather than a paragraph that rewraps every frame
+function exRow(color, label, value) {
+  const sw = color
+    ? `<span class="zoneSw" style="background:rgba(${Math.round(color[0]*255)},`
+      + `${Math.round(color[1]*255)},${Math.round(color[2]*255)},`
+      + `${(color[3] + 0.35).toFixed(2)})"></span>`
+    : `<span class="zoneSw" style="background:none"></span>`;
+  return `<div class="zoneKey">${sw}<span><b>${label}</b>${value ? " &middot; " + value : ""}</span></div>`;
+}
+function exchangePhaseHtml() {
+  const e = exch, p = e.ph || {}, r = blastRadii(e.power.kt);
+  const N = n => (n || 0).toLocaleString();
+  const cityHit = e.running ? 0
+    : new Set(e.shots.filter(s => s.hit && s.city != null).map(s => s.city)).size;
+  const head = `<b>T+${fmtClock(e.t)}</b> &middot; `
+    + (e.running
+      ? `${N(e.flying)} of ${N(e.shots.length)} in flight, ${N(e.hit)} down`
+      : `<b>Exchange complete</b> &middot; ${N(e.hit)} warheads down on `
+        + `${N(cityHit)} cities in ${e.countries.length} `
+        + `${e.countries.length === 1 ? "country" : "countries"}`)
+    + ` &middot; ${e.power.name}, ${e.power.kt} kt warheads`;
+  const rows = e.running
+    ? [exRow([0.36, 0.7, 1.0, 0.95], "In flight",
+        `${N(p.boost)} boosting, ${N(p.coast)} coasting, ${N(p.reentry)} reentering`),
+       exRow([0.85, 0.55, 1.0, 0.95], "Carried by aircraft",
+        `${N(p.air)} still en route, hours behind the missiles`)]
+    : [exRow(null, "Timing", `first impact ${fmtClock(e.tFirst)}, last missile `
+        + `${fmtClock(e.tBal)}, last bomber ${fmtClock(e.tEnd)}`),
+       exRow(null, "Highest apogee", fmtAlt(e.apogee))];
+  const L = rows.concat([
+    exRow([0.99, 0.75, 0.25, 0.95], "Launch points",
+      `${N(e.legs.silo)} silo, ${N(e.legs.sub)} submarine, ${N(e.legs.bomber)} air`),
+    exRow([1, 0.28, 0.24, 0.95], "Aim points",
+      (e.kinds.cf ? `${N(e.kinds.cf)} counterforce, ` : "")
+      + `${N(e.kinds.city)} city`
+      + (e.kinds.disp ? `, ${N(e.kinds.disp)} dispersed` : "")),
+    exRow(ZONE_COLORS.heavy, "Heavy blast", `20 psi to ${fmtDist(r.heavy)}`),
+    exRow(ZONE_COLORS.severe, "Severe blast", `5 psi to ${fmtDist(r.severe)}`),
+    exRow(ZONE_COLORS.burns, "Thermal", `burns to ${fmtDist(r.burns)}`),
+    exRow(ZONE_COLORS.light, "Light damage", `1 psi to ${fmtDist(r.light)}`),
+  ]).join("");
+  const foot = e.running ? ""
+    : `<div class="hint" style="margin-top:5px">Overlapping rings take the `
+      + `severest band. Boost approximated, midcourse an exact Kepler ellipse, `
+      + `air applied to the arrival speed rather than the path.</div>`;
+  return `<div style="margin-bottom:3px">${head}</div>`
+    + `<div class="exLegend">${L}</div>` + foot;
+}
+
+/* ---------- the exchange dialogue ---------- */
+let nukeSel = new Set();          // chosen target countries
+let nukeTimer = null;
+function nukeFill() {
+  const sel = $("nukeSrc");
+  if (sel.options.length) return;
+  for (const [k, p] of Object.entries(NUKE_POWERS)) {
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = `${p.name} (${p.stock.toLocaleString()} warheads)`;
+    sel.appendChild(o);
+  }
+  sel.value = "ru";
+}
+function nukeSrcNote() {
+  const p = NUKE_POWERS[$("nukeSrc").value];
+  if (!p) return;
+  const mode = $("nukeCount").value;
+  const n = exCount(p, mode);
+  const legs = {};
+  for (const s of p.sites) legs[s.k] = (legs[s.k] || 0) + 1;
+  $("nukeSrcNote").innerHTML =
+    `<b>${n.toLocaleString()} warheads fly.</b> ${p.stock.toLocaleString()} in the `
+    + `stockpile, ${p.deployed ? p.deployed.toLocaleString() + " deployed on missiles"
+        : "none kept mated to a missile, so “deployed” falls back to the stockpile"}. `
+    + `Warhead: ${p.wh}. Launch sites: ${legs.silo || 0} land, ${legs.sub || 0} patrol `
+    + `areas, ${legs.bomber || 0} air, about ${p.mirv} warheads per missile.`;
+}
+function nukeChips() {
+  const box = $("nukeChips");
+  box.innerHTML = "";
+  if (!nukeSel.size) { box.innerHTML = `<span class="hint">No targets chosen.</span>`; }
+  for (const c of nukeSel) {
+    const el = document.createElement("span");
+    el.className = "chip";
+    el.innerHTML = c + ' <b>&times;</b>';
+    el.onclick = () => { nukeSel.delete(c); nukeChips(); nukePlan(); };
+    box.appendChild(el);
+  }
+}
+function nukePlan() {
+  const p = NUKE_POWERS[$("nukeSrc").value];
+  const list = [...nukeSel];
+  const n = exCount(p, $("nukeCount").value);
+  const { aims, cities, alloc } = exPlan(n, list, exRand(0x5eed));
+  const go = $("nukeGo");
+  go.disabled = !aims.length;
+  if (!aims.length) {
+    $("nukePlan").textContent = nukeSel.size
+      ? "Nothing on file to aim at in those countries."
+      : "Pick at least one country to aim at.";
+    return;
+  }
+  const k = { cf: 0, city: 0, disp: 0 };
+  for (const a of aims) k[a.k]++;
+  const cityN = alloc.filter(a => a > 0).length;
+  $("nukePlan").innerHTML =
+    `${n.toLocaleString()} warheads: `
+    + (k.cf ? `${k.cf} on ${k.cf / 2} of their own launch sites, ` : "")
+    + `${k.city.toLocaleString()} on ${cityN.toLocaleString()} of `
+    + `${cities.length.toLocaleString()} cities`
+    + (k.disp ? `, ${k.disp.toLocaleString()} on dispersed military sites once the `
+        + `cities are saturated` : "")
+    + (cities.length ? ` &middot; ${cities[0].name} takes ${alloc[0]}` : "") + ".";
+}
+function nukeOpen() {
+  nukeFill(); nukeSrcNote(); nukeChips(); nukePlan();
+  $("nukeDlg").style.display = "block";
+  $("nukeBar").style.display = "none";
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+function nukeClose() {
+  $("nukeDlg").style.display = "none";
+  const bar = $("nukeBar");
+  bar.style.display = "block";
+  bar.textContent = exch
+    ? `${exch.power.name} exchange running · click to set up another`
+    : nukeSel.size
+      ? `${NUKE_POWERS[$("nukeSrc").value].name} vs ${[...nukeSel].join(", ")} · click to change`
+      : "No exchange set up · click to choose";
+}
+// The names people actually type. cities.json carries one official name per
+// country, so "us", "uk", "uae" and "holland" find nothing without this.
+const COUNTRY_ALIAS = {
+  us: "United States", usa: "United States", america: "United States",
+  "united states of america": "United States",
+  uk: "United Kingdom", gb: "United Kingdom", britain: "United Kingdom",
+  "great britain": "United Kingdom", england: "United Kingdom",
+  scotland: "United Kingdom", wales: "United Kingdom",
+  uae: "United Arab Emirates", emirates: "United Arab Emirates",
+  drc: "Democratic Republic of the Congo", congo: "Democratic Republic of the Congo",
+  holland: "Netherlands", nl: "Netherlands", deutschland: "Germany", de: "Germany",
+  prc: "China", roc: "Taiwan", formosa: "Taiwan",
+  ussr: "Russia", "soviet union": "Russia", ru: "Russia", rf: "Russia",
+  dprk: "North Korea", nk: "North Korea", rok: "South Korea", sk: "South Korea",
+  korea: "South Korea", burma: "Myanmar", persia: "Iran", ir: "Iran",
+  ivory: "Côte d'Ivoire", "ivory coast": "Côte d'Ivoire",
+  czechia: "Czechia", "czech republic": "Czechia", swaziland: "Eswatini",
+  macedonia: "North Macedonia", turkiye: "Turkey", cn: "China", jp: "Japan",
+  fr: "France", it: "Italy", es: "Spain", br: "Brazil", in: "India",
+  mx: "Mexico", ca: "Canada", au: "Australia", za: "South Africa",
+  vatican: "Vatican City", "the netherlands": "Netherlands",
+};
+function nukeCountryRows(q) {
+  const box = $("nukeCountryResults");
+  box.innerHTML = "";
+  if (!COUNTRY_DB || q.length < 1) return;
+  const s = cityFold(q), hits = [];
+  const push = i => { if (i >= 0 && !hits.includes(i)) hits.push(i); };
+  // an exact alias wins outright: typing "us" must not offer Uruguay first
+  const al = COUNTRY_ALIAS[s];
+  if (al) push(COUNTRY_KEYS.indexOf(cityFold(al)));
+  for (let i = 0; i < COUNTRY_KEYS.length && hits.length < 8; i++)
+    if (COUNTRY_KEYS[i].startsWith(s)) push(i);
+  // a prefix of an alias, so "brit" and "amer" behave like "britain"
+  if (hits.length < 8)
+    for (const [k, v] of Object.entries(COUNTRY_ALIAS)) {
+      if (hits.length >= 8) break;
+      if (k.startsWith(s)) push(COUNTRY_KEYS.indexOf(cityFold(v)));
+    }
+  if (!hits.length)
+    for (let i = 0; i < COUNTRY_KEYS.length && hits.length < 8; i++)
+      if (COUNTRY_KEYS[i].includes(s) || editLe(s, COUNTRY_KEYS[i], s.length > 7 ? 2 : 1))
+        push(i);
+  for (const i of hits) {
+    const name = COUNTRY_DB[i][0];
+    const row = document.createElement("div");
+    row.textContent = name + (nukeSel.has(name) ? "  (already chosen)" : "");
+    row.onclick = () => {
+      nukeSel.add(name);
+      $("nukeCountry").value = ""; box.innerHTML = "";
+      nukeChips(); nukePlan();
+    };
+    box.appendChild(row);
+  }
+}
+
+// bound directly, not on DOMContentLoaded: this script sits below the markup,
+// so the elements exist, and applyPreset can run before that event fires
+(() => {
+  $("nukeSrc").addEventListener("change", () => { nukeSrcNote(); nukePlan(); });
+  $("nukeCount").addEventListener("change", () => { nukeSrcNote(); nukePlan(); });
+  $("nukeCountry").addEventListener("input", () => {
+    clearTimeout(nukeTimer);
+    nukeTimer = setTimeout(() => nukeCountryRows($("nukeCountry").value.trim()), 60);
+  });
+  $("nukeCountry").addEventListener("keydown", e => {
+    e.stopPropagation();
+    if (e.code === "Enter") {
+      const f = $("nukeCountryResults").firstElementChild;
+      if (f) f.onclick();
+    }
+    if (e.code === "Escape") { $("nukeCountryResults").innerHTML = ""; $("nukeCountry").blur(); }
+  });
+  $("nukeAll").addEventListener("click", () => {
+    // every country that has a city on file, so "all" means all of them
+    nukeSel = new Set(COUNTRY_DB ? COUNTRY_DB.map(c => c[0]) : []);
+    nukeChips(); nukePlan();
+  });
+  $("nukeNone").addEventListener("click", () => { nukeSel.clear(); nukeChips(); nukePlan(); });
+  $("nukeCancel").addEventListener("click", nukeClose);
+  $("nukeGo").addEventListener("click", exchangeStart);
+  $("nukeBar").addEventListener("click", nukeOpen);
+})();
+
 // introspection hooks for automated verification (pointer lock needs a real
 // user gesture, so tests drive the camera and the launch ladder directly)
 window.__sim = {
@@ -4018,6 +5017,19 @@ window.__sim = {
     return fetchElevBatch([[lat, lon]]);
   },
   setWarhead: id => { icbmWh = WARHEADS.find(w => w.id === id) || icbmWh; return icbmWh; },
+  // nuclear-exchange hooks: the dialogue is clicked in the tests, but the
+  // country picker is a search box, so selection is set directly
+  NUKE_POWERS, exTargets, exAllocate, exShotFlight, exAirFlight, exPos, exBuild,
+  exPlan, exCount, exRand, nukeCountryRows,
+  get exch() { return exch; },
+  exSelect: (src, countries, mode) => {
+    nukeFill();
+    $("nukeSrc").value = src; nukeSel = new Set(countries);
+    if (mode) $("nukeCount").value = mode;
+    nukeSrcNote(); nukeChips(); nukePlan();
+  },
+  exLaunch: () => exchangeStart(),
+  exSkipTo: t => { if (exch) { exch.t = t; exchangeStep(0); } },
   solveIcbm: () => icbmSolve(launch.lat, launch.lon, launch.groundElev ?? 0, icbmTarget),
   setSolution: sol => { icbmSol = sol; },
   setCam: (la, lo, alt, yaw, pitch) => {

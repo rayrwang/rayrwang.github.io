@@ -267,17 +267,44 @@ const ZONE_GLSL = `
 uniform vec3 uZoneC;        // centre of the rings, relative to the camera
 uniform vec4 uZoneR;        // the four band radii in metres; w <= 0 = no rings
 uniform mat4 uZoneCol;      // one rgba column per band, alpha = how strongly
+// MANY impacts (the exchange). Built from exactly the ingredients the single
+// ring above is built from: camera-relative vec3 centres in a uniform array,
+// the same four radii, the same four colours. An earlier version put every
+// burst in a pair of floating-point textures with a lat/lon grid index; it
+// worked here and drew nothing at all on RW's laptop, which is the standing
+// lesson (ledger #32/#42): when a defect is environment-specific, rebuild
+// from parts that machine has already proved rather than repairing the
+// exotic path. The centres for each drawn tile are chosen on the CPU.
+// The union takes the SEVEREST band any burst puts a point in, which is what
+// overlapping damage means: inside two 5 psi rings is no worse than one, but
+// inside one 20 psi ring and one 5 psi ring is a 20 psi place.
+#define ZF_MAX 32
+uniform vec3 uZFC[ZF_MAX];  // burst centres, camera-relative like uZoneC
+uniform int uZFN;           // how many of them apply to this tile
+vec4 zoneBand(float d) {
+  if (d < uZoneR.x) return uZoneCol[0];
+  if (d < uZoneR.y) return uZoneCol[1];
+  if (d < uZoneR.z) return uZoneCol[2];
+  if (d < uZoneR.w) return uZoneCol[3];
+  return vec4(0.0);
+}
 vec3 zoneTint(vec3 col, vec3 p) {
+  if (uZFN > 0) {
+    float best = 1e30;
+    for (int i = 0; i < ZF_MAX; i++) {
+      if (i >= uZFN) break;
+      best = min(best, distance(p, uZFC[i]));
+      // inside the severest band already: nothing nearer can change the answer
+      if (best < uZoneR.x) break;
+    }
+    vec4 z = zoneBand(best);
+    return z.a > 0.0 ? mix(col, z.rgb, z.a) : col;
+  }
   if (uZoneR.w <= 0.0) return col;
   // straight-line distance, which is the surface distance to a part in a
   // thousand at these radii, and reads as slant range on anything tall
-  float d = distance(p, uZoneC);
-  vec4 z = vec4(0.0);
-  if (d < uZoneR.x) z = uZoneCol[0];
-  else if (d < uZoneR.y) z = uZoneCol[1];
-  else if (d < uZoneR.z) z = uZoneCol[2];
-  else if (d < uZoneR.w) z = uZoneCol[3];
-  return mix(col, z.rgb, z.a);
+  vec4 z = zoneBand(distance(p, uZoneC));
+  return z.a > 0.0 ? mix(col, z.rgb, z.a) : col;
 }
 `;
 
@@ -448,6 +475,68 @@ void main() {
   float r2 = dot(q, q);
   if (r2 > 1.0) discard;
   frag = vec4(vCol * vA * exp(-2.8 * r2), 1.0);
+}`;
+
+// World-anchored point sprites: one draw call for thousands of marks, where a
+// DOM marker each would not survive the count (the exchange flies thousands of
+// objects at once). Positions are camera-relative ECEF, depth-tested against
+// the world so a mark on the far side of the planet is hidden by it, and log
+// depth so a 2 m pin and a 1,300 km apogee share the buffer.
+const PT_VS = `#version 300 es
+precision highp float;
+in vec3 aPos;
+uniform mat4 uVP; uniform vec3 uOrigin; uniform float uLogF;
+uniform float uSize;
+uniform float uWorldR;    // >0: size follows a real radius in metres instead
+uniform float uPxK;       // viewport height / tan(fovy/2): metres -> pixels
+uniform float uSizeMax;   // pixel ceiling for a world-sized mark
+out float vW; out float vFade;
+void main() {
+  vec4 pos = uVP * vec4(aPos + uOrigin, 1.0);
+  vW = pos.w;
+  pos.z = (log2(max(1e-6, pos.w + 1.0)) * uLogF - 1.0) * pos.w;
+  gl_Position = pos;
+  if (uWorldR > 0.0) {
+    // a mark that tracks a real size on the ground, floored so it stays
+    // visible and capped so it cannot swell into a blob: thousands of impact
+    // crosses at a fixed marker size merged into one red mass from orbit
+    float px = uWorldR * uPxK / max(1.0, pos.w);
+    gl_PointSize = clamp(px, uSize, uSizeMax > 0.0 ? uSizeMax : 1e4);
+    vFade = 1.0;
+  } else { gl_PointSize = uSize; vFade = 1.0; }
+}`;
+
+const PT_FS = `#version 300 es
+precision highp float;
+in float vW; in float vFade; out vec4 frag;
+uniform vec4 uC; uniform float uLogF; uniform int uShape;
+void main() {
+  vec2 q = gl_PointCoord * 2.0 - 1.0;
+  float a;
+  if (uShape == 1) {
+    // the same X the landing marker draws (LAND_SVG: two round-capped
+    // diagonals), so an impact here looks like an impact everywhere else
+    float d = min(abs(q.x - q.y), abs(q.x + q.y)) * 0.70710678;
+    float r = length(q);
+    if (r > 1.0) discard;
+    a = (1.0 - smoothstep(0.16, 0.30, d)) * (1.0 - smoothstep(0.86, 1.0, r));
+    if (a <= 0.01) discard;
+  } else {                                 // disc with a soft edge
+    float r = length(q);
+    if (r > 1.0) discard;
+    a = smoothstep(1.0, 0.55, r);
+  }
+  a *= vFade;
+  if (a <= 0.002) discard;
+  frag = vec4(uC.rgb, uC.a * a);
+  // A sprite is a flat square at ONE depth, but the ground it sits on runs
+  // away from the camera across it: at an oblique view the terrain in the
+  // lower half of the sprite is nearer than the sprite's own depth and wins
+  // the test, so an X rendered as a V (RW). Pull the whole sprite a few per
+  // cent toward the camera, which is the usual decal bias and is far smaller
+  // than the distance to anything behind it.
+  gl_FragDepth = clamp((log2(max(1e-6, vW * 0.94 + 1.0)) * uLogF - 1.0) * 0.5 + 0.5,
+                       0.0, 1.0);
 }`;
 
 // Lens flare: ONE fullscreen additive pass, entirely procedural, drawn only
@@ -873,7 +962,7 @@ void main() {
 }`;
 
 /* ---------- renderer ---------- */
-const GLOBE_BUILD = "2026-08-18m";
+const GLOBE_BUILD = "2026-08-18o";
 class Globe {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -960,6 +1049,11 @@ class Globe {
       for (let i = 0; i < n; i++) {
         const info = gl.getActiveUniform(p, i);
         u[info.name] = gl.getUniformLocation(p, info.name);
+        // an array uniform is reported as "name[0]", so key it by the bare
+        // name as well: without this every lookup by the name written in the
+        // shader misses, the upload goes nowhere and nothing is drawn, with
+        // no error anywhere (this is exactly how the damage rings vanished)
+        if (info.name.endsWith("[0]")) u[info.name.slice(0, -3)] = u[info.name];
       }
       return { p, u };
     };
@@ -970,6 +1064,7 @@ class Globe {
     this.pBldg = mk(BLDG_VS, BLDG_FS);
     this.pFlare = mk(SKY_VS, FLARE_FS);      // fullscreen, same triangle
     this.pFlareQ = mk(FLAREQ_VS, FLAREQ_FS);
+    this.pPt = mk(PT_VS, PT_FS);
     this._mk = mk;
   }
 
@@ -1745,6 +1840,57 @@ class Globe {
     if (!s) { s = { vbuf: null, ibuf: null, vao: null, n: 0 }; this.lines.set(name, s); }
     s.polys = polys; s.color = color; s.width = width; s.dirty = true;
   }
+  // pts: flat [lat, lon, hMSL, ...]; shape 0 = disc, 1 = cross. One buffer per
+  // named set, rebuilt whenever the caller hands over a new array.
+  // worldR (metres) makes the mark track a real size on the ground, with a
+  // floor so it stays visible from orbit and a fade as the ground painting
+  // takes over
+  setPoints(name, pts, color, size, shape, worldR, sizeMax) {
+    if (!this.points) this.points = new Map();
+    let s = this.points.get(name);
+    if (!s) { s = { buf: null, vao: null, n: 0 }; this.points.set(name, s); }
+    s.pts = pts; s.color = color; s.size = size || 6;
+    s.shape = shape || 0; s.worldR = worldR || 0;
+    s.sizeMax = sizeMax || 0; s.dirty = true;
+    return s;
+  }
+  // same, but the caller already has absolute ECEF (the exchange propagates
+  // Kepler arcs in ECEF, so a round trip through lat/lon would be pure waste
+  // at thousands of objects a frame)
+  setPointsEcef(name, xyz, color, size, shape) {
+    const s = this.setPoints(name, xyz, color, size, shape);
+    s.raw = true;
+    return s;
+  }
+  clearPoints(name) {
+    const s = this.points && this.points.get(name);
+    if (s) { s.pts = null; s.n = 0; s.dirty = true; }
+  }
+  _buildPoints(s) {
+    const gl = this.gl;
+    s.dirty = false;
+    const p = s.pts;
+    if (!p || p.length < 3) { s.n = 0; return; }
+    const n = (p.length / 3) | 0;
+    s.anchor = s.raw ? [p[0], p[1], p[2]] : ecef(p[0], p[1], p[2]);
+    const arr = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const e = s.raw ? [p[i * 3], p[i * 3 + 1], p[i * 3 + 2]]
+                      : ecef(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
+      arr[i * 3] = e[0] - s.anchor[0];
+      arr[i * 3 + 1] = e[1] - s.anchor[1];
+      arr[i * 3 + 2] = e[2] - s.anchor[2];
+    }
+    if (!s.buf) { s.buf = gl.createBuffer(); s.vao = gl.createVertexArray(); }
+    gl.bindVertexArray(s.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, s.buf);
+    gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
+    gl.bindVertexArray(null);
+    s.n = n;
+  }
+
   clearLines(name) {
     const s = this.lines.get(name);
     if (!s) return;
@@ -1884,7 +2030,120 @@ class Globe {
     this.zone = bands && bands.length ? { lat, lon, bands: bands.slice(0, 4) } : null;
   }
   clearZones(name) { this.zone = null; }
+
+  /* ---------- the many-impact zone field ----------
+   * Every burst in an exchange shares one set of band radii (one warhead
+   * type per shooter), so the field stores only centres. They go into a
+   * uniform lat/lon grid whose cells are far wider than any blast radius,
+   * so a fragment tests only its own cell: without that the shader would
+   * loop over every burst for every pixel of ground on screen.
+   * A burst is written into every cell its outer ring reaches, so no cell
+   * ever has to look at its neighbours. */
+  setZoneField(radii, colors) {
+    if (!radii) { this.zf = null; return; }
+    // 1 degree buckets, only ever walked on the CPU, to keep the per-tile
+    // "which bursts touch you" question cheap
+    this.zf = { radii, colors, pts: [], ecef: [], grid: new Map(), gen: 0 };
+  }
+  clearZoneField() { this.zf = null; }
+  // add bursts as [lat, lon] pairs
+  addZoneImpacts(list) {
+    const z = this.zf;
+    if (!z || !list.length) return;
+    for (const [la, lo] of list) {
+      const i = z.pts.length;
+      z.pts.push([la, lo]);
+      // the burst sits on the ground it lands on, so tall things near it
+      // read slant range the way the single-ring path does
+      z.ecef.push(ecef(la, lo, this.terrainAt(la, lo) ?? 0));
+      const key = (Math.floor(la) + 90) * 360 + (Math.floor(lo) + 180);
+      let b = z.grid.get(key);
+      if (!b) z.grid.set(key, b = []);
+      b.push(i);
+    }
+    z.gen++;
+  }
+  // the bursts that can touch a tile, nearest first, capped at what the
+  // shader's uniform array holds
+  _zfForTile(geo) {
+    const z = this.zf, out = [];
+    const pad = z.radii[3];
+    const dLat = pad / 111320 + 1;
+    const cosl = Math.max(0.02, Math.cos(geo.latM * D2R));
+    const dLon = pad / (111320 * cosl) + 1;
+    const y0 = Math.floor(geo.latS - dLat), y1 = Math.floor(geo.latN + dLat);
+    const x0 = Math.floor(geo.lonW - dLon), x1 = Math.floor(geo.lonE + dLon);
+    // a tile spanning a big slice of the planet is one where the rings are
+    // sub-pixel anyway; the caller has already skipped those
+    for (let y = y0; y <= y1; y++) {
+      if (y < -90 || y > 89) continue;
+      for (let x = x0; x <= x1; x++) {
+        const xw = ((x + 180) % 360 + 360) % 360;
+        const b = z.grid.get((y + 90) * 360 + xw);
+        if (!b) continue;
+        for (const i of b) out.push(i);
+        if (out.length > 4096) break;
+      }
+    }
+    if (!out.length) return null;
+    const cx = ecef(geo.latM, geo.lonM, 0);
+    if (out.length > 32) {
+      out.sort((a, b) => {
+        const A = z.ecef[a], B = z.ecef[b];
+        return ((A[0]-cx[0])**2 + (A[1]-cx[1])**2 + (A[2]-cx[2])**2)
+             - ((B[0]-cx[0])**2 + (B[1]-cx[1])**2 + (B[2]-cx[2])**2);
+      });
+      out.length = 32;
+    }
+    return out;
+  }
+  // per-tile upload: the centres this tile can see, camera-relative in JS
+  // doubles exactly like the single ring's uZoneC
+  _zfTileUniforms(u, geo, ringPx) {
+    const z = this.zf;
+    if (!u.uZFN) return false;
+    // below a pixel the ring cannot show, so the tile skips the whole thing
+    if (!z || !z.pts.length || ringPx < 0.75) { this.gl.uniform1i(u.uZFN, 0); return false; }
+    const key = geo.latM + "," + geo.lonM + "," + geo.span;
+    let hit = this._zfCache && this._zfCache.gen === z.gen
+      ? this._zfCache.map.get(key) : null;
+    if (hit === undefined || hit === null) {
+      hit = this._zfForTile(geo) || [];
+      if (!this._zfCache || this._zfCache.gen !== z.gen)
+        this._zfCache = { gen: z.gen, map: new Map() };
+      this._zfCache.map.set(key, hit);
+    }
+    if (!hit.length) { this.gl.uniform1i(u.uZFN, 0); return false; }
+    const arr = new Float32Array(hit.length * 3);
+    for (let i = 0; i < hit.length; i++) {
+      const e = z.ecef[hit[i]];
+      arr[i*3] = e[0] - this.camPos[0];
+      arr[i*3+1] = e[1] - this.camPos[1];
+      arr[i*3+2] = e[2] - this.camPos[2];
+    }
+    const gl = this.gl;
+    gl.uniform3fv(u.uZFC, arr);
+    gl.uniform1i(u.uZFN, hit.length);
+    gl.uniform4f(u.uZoneR, z.radii[0], z.radii[1], z.radii[2], z.radii[3]);
+    const col = new Float32Array(16);
+    for (let i = 0; i < 4; i++) col.set(z.colors[i], i * 4);
+    gl.uniformMatrix4fv(u.uZoneCol, false, col);
+    return true;
+  }
+  // terrain arriving under a burst moves its centre
+  rebuildZoneField() {
+    const z = this.zf;
+    if (!z || !z.pts.length) return;
+    for (let i = 0; i < z.pts.length; i++)
+      z.ecef[i] = ecef(z.pts[i][0], z.pts[i][1], this.terrainAt(z.pts[i][0], z.pts[i][1]) ?? 0);
+    z.gen++;
+  }
+
   _zoneUniforms(u) {
+    if (u.uZFN) this.gl.uniform1i(u.uZFN, 0);
+    this._zoneUniformsSingle(u);
+  }
+  _zoneUniformsSingle(u) {
     const z = this.zone;
     if (!z) { if (u.uZoneR) this.gl.uniform4f(u.uZoneR, 0, 0, 0, 0); return; }
     const c = ecef(z.lat, z.lon, this.terrainAt(z.lat, z.lon) ?? 0);
@@ -2158,10 +2417,17 @@ class Globe {
     if (list.length > 520) this.refinePx = Math.min(this.refinePx * 1.12, 1024);
     else if (list.length < 320) this.refinePx = Math.max(this.refinePx * 0.94, this.refineBase);
     list.sort((a, b) => a.z - b.z);          // parents first: children overdraw
+    const zfLive = this.zf && this.zf.pts.length;
     for (const t of list) {
       this._wantTex(t.z, t.x, t.y, t.px);
       const mesh = this._mesh(t.z, t.x, t.y);
       const { tex, uvt } = this._texFor(t.z, t.x, t.y);
+      // the exchange's damage rings: which bursts reach THIS tile, and skip
+      // the work entirely where a ring would be under a pixel wide
+      if (zfLive) {
+        const geo = this._tileGeo(t.z, t.x, t.y);
+        this._zfTileUniforms(tu, geo, this.zf.radii[3] / geo.span * t.px);
+      }
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.uniform4fv(tu.uUVT, uvt);
       gl.uniform4f(tu.uSolid, 0, 0, 0, 0);
@@ -2213,6 +2479,36 @@ class Globe {
       gl.drawElements(gl.TRIANGLES, s.n, gl.UNSIGNED_INT, 0);
     }
     gl.bindVertexArray(null);
+
+    // point sprites (exchange objects, silos, impact crosses): one draw call
+    // per set, depth-tested so the far side of the planet hides its own
+    if (this.points && this.points.size) {
+      gl.enable(gl.BLEND);
+      // the line pass leaves premultiplied blending set; these colours are not
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      gl.useProgram(this.pPt.p);
+      const pu = this.pPt.u;
+      gl.uniformMatrix4fv(pu.uVP, false, this.vp);
+      gl.uniform1f(pu.uLogF, this.logF);
+      for (const s of this.points.values()) {
+        if (s.dirty) this._buildPoints(s);
+        if (!s.n) continue;
+        gl.uniform3f(pu.uOrigin,
+          s.anchor[0] - this.camPos[0],
+          s.anchor[1] - this.camPos[1],
+          s.anchor[2] - this.camPos[2]);
+        gl.uniform4fv(pu.uC, s.color);
+        gl.uniform1f(pu.uSize, s.size * this.dpr);
+        gl.uniform1i(pu.uShape, s.shape);
+        gl.uniform1f(pu.uWorldR, s.worldR || 0);
+        gl.uniform1f(pu.uSizeMax, (s.sizeMax || 0) * this.dpr);
+        gl.uniform1f(pu.uPxK, this.canvas.height / this.tanHalf);
+        gl.bindVertexArray(s.vao);
+        gl.drawArrays(gl.POINTS, 0, s.n);
+      }
+      gl.bindVertexArray(null);
+    }
+    gl.disable(gl.BLEND);
     gl.depthMask(true);
 
     // lens flare, additively over everything
@@ -2789,11 +3085,17 @@ Globe.prototype._renderBuildings = function (list) {
     gl.uniform1i(u.uSkyV, 4);
   }
   let triSum = 0;
+  const zfLive = this.zf && this.zf.pts.length;
   for (const key of want) {
     const m = B.meshes.get(key);
     if (!m || !m.n) continue;
     m.frame = this.frame;
     triSum += m.n;
+    // buildings inside a damage ring take its colour, same as the ground
+    if (zfLive) {
+      const [bz, bx, by] = key.split("/").map(Number);
+      this._zfTileUniforms(u, this._tileGeo(bz, bx, by), 1e6);
+    }
     // terrain arrived since this mesh was built: queue a rebase through the
     // same incremental cursor; the stale mesh keeps drawing meanwhile
     if (!B.cursor && m.data) {
