@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <link rel="icon" type="image/jpeg" href="/images/icon.jpg">
 <title>Globe Ballistics Simulator &middot; Raymond Wang</title>
 <meta name="description" content="Projectile flight simulated on a real globe: real terrain, real forecast wind and air density, Mach-dependent drag. A balloon, a record fastball, a crossbow bolt, a 9 mm round, a .50 BMG, Yamato's 46 cm gun, the Pascal-B manhole cover, and a Falcon 9 ascent to orbit.">
@@ -173,6 +173,10 @@
   /* the bottom panels are display-only; on touch they must not swallow the
      joystick zone or look-drags under them */
   body.touch #bottomStack .panel { pointer-events:none; }
+  /* panels may scroll vertically but never hand the browser a pinch: a
+     pinch-zoomed page anchors the fixed UI to the layout viewport and the
+     corner buttons drift off the visible screen */
+  body.touch .panel, body.touch #citySearch, body.touch #icbmDlg { touch-action:pan-y; }
 </style>
 </head>
 <body>
@@ -248,20 +252,25 @@
   </div>
 
   <div class="sec">
-    <div class="radio">
-      <label><input type="radio" name="wmode" id="windManual"> manual wind</label>
-      <label><input type="radio" name="wmode" id="windCurrent" checked> current wind</label>
-    </div>
-    <div class="hint" id="windNote" style="display:none"></div>
-    <div id="windManualBox" style="display:none">
-      <label><span>Speed (m/s)</span><input id="windSpeed" type="number" step="0.5" min="0" value="3"></label>
-      <label><span>From (deg)</span><input id="windDir" type="number" step="5" min="0" max="360" value="270"></label>
-    </div>
-    <div id="windCurrentBox">
-      <button class="small" id="fetchWind">Fetch profile</button>
-      <span class="hint" id="windStatus" style="display:inline"></span>
-      <div style="max-height:150px; overflow-y:auto"><table id="windTable"></table></div>
-    </div>
+    <!-- collapsed by default (RW): the profile still loads and flies the
+         physics either way, this only hides the table and controls -->
+    <details id="windBox">
+      <summary>Wind (current forecast by default)</summary>
+      <div class="radio">
+        <label><input type="radio" name="wmode" id="windManual"> manual wind</label>
+        <label><input type="radio" name="wmode" id="windCurrent" checked> current wind</label>
+      </div>
+      <div class="hint" id="windNote" style="display:none"></div>
+      <div id="windManualBox" style="display:none">
+        <label><span>Speed (m/s)</span><input id="windSpeed" type="number" step="0.5" min="0" value="3"></label>
+        <label><span>From (deg)</span><input id="windDir" type="number" step="5" min="0" max="360" value="270"></label>
+      </div>
+      <div id="windCurrentBox">
+        <button class="small" id="fetchWind">Fetch profile</button>
+        <span class="hint" id="windStatus" style="display:inline"></span>
+        <div style="max-height:150px; overflow-y:auto"><table id="windTable"></table></div>
+      </div>
+    </details>
   </div>
 
   <div class="sec">
@@ -1549,7 +1558,7 @@ function bindCollapse(pid, hid, start) {
   head.addEventListener("click", () => set(!p.classList.contains("collapsed")));
   set(start);
 }
-bindCollapse("ctl", "ctlHead", isTouch);
+bindCollapse("ctl", "ctlHead", false);   // expanded by default, mobile too (RW)
 bindCollapse("hud", "hudHead", isTouch);
 if (!isTouch) $("followBtn").textContent = "Follow object (F to toggle)";
 $("wallNowBtn").addEventListener("click", () => {
@@ -2020,6 +2029,18 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) keys.
 // The bottom-right column holds ✓ (left click), ✕ (right click), and the
 // climb/descend arrows; +°/−° appear beside them during the angle stage.
 if (isTouch) document.body.classList.add("touch");
+// Two fingers down is the NORMAL state here (joystick + look), and the
+// browser reads exactly that as a pinch wherever it still owns gestures;
+// a pinch-zoomed page anchors the fixed UI off the visible viewport (the
+// buttons "drifting off screen while looking around"). iOS ignores the
+// viewport meta's zoom lock, so the gestures are refused directly; our
+// own pointer-event controls are unaffected.
+if (isTouch) {
+  document.addEventListener("gesturestart", e => e.preventDefault());   // iOS pinch
+  document.addEventListener("touchmove", e => {
+    if (e.touches.length > 1) e.preventDefault();
+  }, { passive: false });
+}
 const TOUCH_LOOK = 0.0045 * 180/Math.PI;      // deg per px, nettlecombe's feel
 const STICK_R = 52;
 let stickId = null, stickOx = 0, stickOy = 0;
