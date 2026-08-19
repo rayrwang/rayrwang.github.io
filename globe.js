@@ -973,7 +973,7 @@ void main() {
 }`;
 
 /* ---------- renderer ---------- */
-const GLOBE_BUILD = "2026-08-18o";
+const GLOBE_BUILD = "2026-08-19a";
 class Globe {
   constructor(canvas, opts = {}) {
     this.canvas = canvas;
@@ -1423,7 +1423,20 @@ class Globe {
       east[0] * Math.sin(yr) * cp + north[0] * Math.cos(yr) * cp + up[0] * Math.sin(pr),
       east[1] * Math.sin(yr) * cp + north[1] * Math.cos(yr) * cp + up[1] * Math.sin(pr),
       east[2] * Math.sin(yr) * cp + north[2] * Math.cos(yr) * cp + up[2] * Math.sin(pr)];
-    const right = vunit(vcross(fwd, up));
+    // Straight down is a degenerate case: at pitch -90 the look vector is
+    // antiparallel to local up, so fwd x up is the zero vector and the whole
+    // camera basis collapses (the picture survives but is meaningless, which
+    // is why nothing appeared to be drawn at nadir). The fly controls clamp
+    // short of it, but setCam and scripted views do not, so fall back to the
+    // orientation the yaw alone implies.
+    let right = vcross(fwd, up);
+    if (right[0] * right[0] + right[1] * right[1] + right[2] * right[2] < 1e-12) {
+      const cy = Math.cos(yr), sy = Math.sin(yr);
+      right = [east[0] * cy - north[0] * sy,
+               east[1] * cy - north[1] * sy,
+               east[2] * cy - north[2] * sy];
+    }
+    right = vunit(right);
     const cUp = vcross(right, fwd);
     this.camFwd = fwd; this.camRight = right; this.camUp = cUp; this.camUpWorld = up;
     // view rotation (rows right / up / -fwd), then projection
@@ -2451,7 +2464,11 @@ class Globe {
       // the work entirely where a ring would be under a pixel wide
       if (zfLive) {
         const geo = this._tileGeo(t.z, t.x, t.y);
-        this._zfTileUniforms(tu, geo, this.zf.radii[3] / geo.span * t.px);
+        // the ring's REAL size, not the one-kilotonne base: a 500 kt burst
+        // reaches eight times as far, and sizing the cull from the base
+        // radius skips tiles that should have been tinted
+        this._zfTileUniforms(tu, geo,
+          (this.zf.maxOuter || this.zf.radii[3]) / geo.span * t.px);
       }
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.uniform4fv(tu.uUVT, uvt);

@@ -269,6 +269,7 @@
   <div class="hint">Every warhead one country has, launched at once, at the
     cities of whichever countries you pick. Biggest cities take the most.</div>
   <label><span>Launching</span><select id="nukeSrc"></select></label>
+  <label><span>Aimed at</span><select id="nukeDoctrine"></select></label>
   <label><span>How many</span><select id="nukeCount">
     <option value="deployed" selected>Deployed and ready</option>
     <option value="stock">The whole stockpile</option>
@@ -968,14 +969,34 @@ const ZONE_COLORS = {
  * how many rise together; `kt` is the yield of that country's usual
  * strategic warhead. */
 /* ---------- blocs ----------
- * Nuclear questions are rarely one country against one country, so both ends
- * of the dialogue take a bloc. On the LAUNCHING side only members that
- * actually have warheads contribute (NATO fires American, British and French
- * weapons; nobody else in it owns any). On the TARGET side every member
- * counts, which is the point of an alliance.
- * Membership is as of 2025: NATO includes Finland (2023) and Sweden (2024).
- * The country names must match the city file's names exactly, hence "The
- * Netherlands" and "Czechia". */
+ * Only groupings that mean something in a nuclear exchange, which is a much
+ * shorter list than "alliances". The test is whether the members would
+ * plausibly shoot together or be shot at together:
+ *   NATO             integrated nuclear planning and American bombs on six
+ *                    members' soil; the one real nuclear alliance
+ *   European NATO    the same without America, which is the interesting case
+ *                    when the question is whether Europe is covered
+ *   Russia+Belarus   the Union State, and Belarus hosts Russian weapons
+ *   China+N Korea    the 1961 mutual-defence treaty, still in force
+ *   Russia+China+DPRK  no treaty binds these three; it is the alignment the
+ *                    threat literature groups, and it is the other side of a
+ *                    global exchange. Labelled an alignment, not a pact.
+ *   US Pacific allies  the target set in a Pacific war, and hosts of US forces
+ *   India+Pakistan   the likeliest real exchange on the planet
+ * Target-only entries carry an empty `fire` list, either because they would
+ * never launch together (India and Pakistan) or because doing so would add
+ * nothing: Russia and Belarus fires exactly Russia's arsenal, and the US
+ * Pacific allies fire exactly America's, so as sources they would just
+ * duplicate a country already in the list. They matter as target sets.
+ *   Every nuclear power  the everything case
+ * Dropped as irrelevant here: Five Eyes (intelligence sharing, no nuclear
+ * dimension), the EU (no nuclear command; European NATO is the useful cut)
+ * and the NPT five (adversaries, who would never fire together).
+ * A bloc with an empty `fire` list appears as a target only.
+ * No `aka` may be a bare country name: an exact alias leads the results, so
+ * "russia" would otherwise offer "Russia and Belarus" ahead of Russia itself.
+ * Country names must match the city file exactly, hence "The Netherlands".
+ */
 const NUKE_BLOCS = {
   nato: { name: "NATO", fire: ["us", "gb", "fr"], members: [
     "Albania", "Belgium", "Bulgaria", "Canada", "Croatia", "Czechia", "Denmark",
@@ -984,27 +1005,29 @@ const NUKE_BLOCS = {
     "North Macedonia", "Norway", "Poland", "Portugal", "Romania", "Slovakia",
     "Slovenia", "Spain", "Sweden", "Turkey", "United Kingdom", "United States"],
     aka: ["nato", "north atlantic treaty organization", "the west", "alliance"] },
-  csto: { name: "Russia and the CSTO", fire: ["ru"], members: [
-    "Armenia", "Belarus", "Kazakhstan", "Kyrgyzstan", "Russia", "Tajikistan"],
-    aka: ["csto", "collective security treaty organization", "russia and allies"] },
-  eu: { name: "European Union", fire: ["fr"], members: [
-    "Austria", "Belgium", "Bulgaria", "Croatia", "Cyprus", "Czechia", "Denmark",
-    "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland",
-    "Italy", "Latvia", "Lithuania", "Luxembourg", "Malta", "The Netherlands",
-    "Poland", "Portugal", "Romania", "Slovakia", "Slovenia", "Spain", "Sweden"],
-    aka: ["eu", "european union", "europe"] },
-  fiveeyes: { name: "Five Eyes", fire: ["us", "gb"], members: [
-    "Australia", "Canada", "New Zealand", "United Kingdom", "United States"],
-    aka: ["five eyes", "fiveeyes", "anglosphere", "aukus"] },
-  pacific: { name: "US Pacific allies", fire: ["us"], members: [
-    "Japan", "South Korea", "Philippines", "Thailand", "Australia", "New Zealand"],
-    aka: ["us pacific allies", "pacific allies", "east asia allies"] },
-  p5: { name: "The five NPT powers", fire: ["us", "ru", "cn", "gb", "fr"], members: [
-    "United States", "Russia", "China", "United Kingdom", "France"],
-    aka: ["p5", "npt", "security council", "permanent five"] },
+  natoeu: { name: "European NATO", fire: ["gb", "fr"], members: [
+    "Albania", "Belgium", "Bulgaria", "Croatia", "Czechia", "Denmark",
+    "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Iceland",
+    "Italy", "Latvia", "Lithuania", "Luxembourg", "Montenegro", "The Netherlands",
+    "North Macedonia", "Norway", "Poland", "Portugal", "Romania", "Slovakia",
+    "Slovenia", "Spain", "Sweden", "Turkey", "United Kingdom"],
+    aka: ["european nato", "europe", "nato europe", "eu"] },
+  rubel: { name: "Russia and Belarus", fire: [], members: ["Russia", "Belarus"],
+    aka: ["russia and belarus", "union state"] },
+  cnkp: { name: "China and North Korea", fire: ["cn", "kp"], members: [
+    "China", "North Korea"],
+    aka: ["china and north korea"] },
+  east: { name: "Russia, China and North Korea", fire: ["ru", "cn", "kp"],
+    members: ["Russia", "China", "North Korea", "Belarus"],
+    aka: ["russia china and north korea", "eastern powers", "crink"] },
+  pacific: { name: "US Pacific allies", fire: [], members: [
+    "Japan", "South Korea", "Philippines", "Australia", "Thailand"],
+    aka: ["us pacific allies", "pacific allies", "east asia allies", "pacific"] },
+  southasia: { name: "India and Pakistan", fire: [], members: ["India", "Pakistan"],
+    aka: ["india and pakistan", "south asia", "subcontinent"] },
   all: { name: "Every nuclear power", fire: ["ru", "us", "cn", "fr", "gb", "in", "pk", "il", "kp"],
     members: ["Russia", "United States", "China", "France", "United Kingdom",
-              "India", "Pakistan", "Israel", "North Korea"],
+              "India", "Pakistan", "Israel", "North Korea", "Belarus"],
     aka: ["every nuclear power", "all nuclear powers", "everyone", "nuclear powers"] },
 };
 
@@ -4626,6 +4649,69 @@ function icbmImpactReport(s, ll) {
  * tracks, no velocity arrows, no drop lines: at this count they are a wall
  * of ink that hides the thing itself. */
 let exch = null;
+/* ---------- targeting doctrine ----------
+ * Where the warheads actually go, following the declassified record rather
+ * than a guess. Two published laydowns anchor this.
+ *
+ * ORNL-5041 Table 3.1 (the CRP-2B attack: a hypothetical Soviet strike on the
+ * United States, prepared by the Defense Civil Preparedness Agency and used
+ * for US civil-defence planning) is the most detailed weapon-by-weapon plan
+ * in the open literature. Of its 1,444 weapons: 12% on nuclear forces, 13%
+ * on other military targets, 75% urban-industrial. Of its 6,559 megatonnes:
+ * 39% counterforce, 3% other military, 57% urban-industrial. 471 of the
+ * weapons are SURFACE bursts, a third of the count but 77% of the yield,
+ * because the hardened targets get them.
+ *
+ * FEMA's NAPB-90 (1987) is the aim-point census: 6,139 points, and the two
+ * largest classes are not military at all. 2,094 chemical plants, 1,632
+ * electric power facilities, 1,228 ICBM silos and launch control centres,
+ * 468 other military, 325 military-support industry, 242 refineries, 106
+ * ports, 44 political. That is why an attack aimed at infrastructure still
+ * lands mostly on cities: the infrastructure is in them.
+ *
+ * The nuclear-winter literature makes a different assumption (about 20% of
+ * yield on cities against CRP-2B's 57%), and a pure counterforce plan puts
+ * none there at all. That spread is real and unresolvable, so it is a
+ * control rather than a hidden constant.
+ */
+const EX_DOCTRINE = {
+  mixed: { name: "Counterforce and countervalue (CRP-2B shape)",
+           cf: 0.12, mil: 0.13, infra: 0.30, city: 0.45,
+           note: "the shape of the one fully published laydown: an eighth on "
+             + "nuclear forces, an eighth on other military, the rest on "
+             + "industry and population" },
+  force: { name: "Counterforce only (military and nuclear forces)",
+           cf: 0.45, mil: 0.40, infra: 0.15, city: 0.0,
+           note: "silos, bases and war-supporting industry; nothing aimed at "
+             + "population, though the industry sits in the cities anyway" },
+  value: { name: "Countervalue (cities and industry)",
+           cf: 0.0, mil: 0.05, infra: 0.25, city: 0.70,
+           note: "the deterrent threat rather than a war plan: population and "
+             + "the industry that rebuilds a country" },
+};
+// NAPB-90's own class proportions, used to place the non-military aim points.
+// The sim has no database of individual power stations or chemical plants, so
+// these are scattered around the population that hosts them, which is both
+// where they are and how the academic exchange studies place them.
+const EX_INFRA = [
+  { k: "chem",  w: 2094, name: "chemical plant",     near: [4000, 30000] },
+  { k: "power", w: 1632, name: "power station",      near: [3000, 40000] },
+  { k: "ind",   w: 325,  name: "war-supporting industry", near: [2000, 20000] },
+  { k: "oil",   w: 242,  name: "refinery",           near: [4000, 35000] },
+  { k: "port",  w: 106,  name: "port",               near: [1000, 25000] },
+];
+// A surface burst digs a crater and throws fallout, but for the same yield it
+// reaches LESS far than an air burst set for maximum blast area, because the
+// air burst gets Mach reflection. The radius ratio is about 0.72, which this
+// applies as an effective yield (0.72 cubed) so the existing per-burst yield
+// scaling carries it through unchanged.
+const EX_SURFACE_R = 0.72;
+// How far apart the warheads of a multi-weapon city attack land. US Army
+// doctrine (FM 101-31-1) is explicit that extra weapons on a POINT target
+// stack on one desired ground zero rather than tiling around it, so only
+// area targets spread. For those, the Toon family's spacing scales as the
+// square root of yield: 6 km at 15 kt, 15.5 km at 100 kt.
+const EX_SPACE_K = 1.55;       // km per sqrt(kilotonne)
 const EX_SPREAD = 2500;        // m: laydown spacing on a multi-warhead city
 const EX_CAP = 10;             // warheads on any one city, however big it is:
                                // a low ceiling is what keeps a big arsenal
@@ -4786,7 +4872,8 @@ function exTargets(countries) {
   if (!CITY_DB) return [];
   const set = new Set(countries), out = [];
   for (const c of CITY_DB)
-    if (set.has(c[1])) out.push({ name: c[0], country: c[1], lat: c[2], lon: c[3] });
+    if (set.has(c[1])) out.push({ name: c[0], country: c[1], lat: c[2],
+                                  lon: c[3], pop: c[4] || 0 });
   return out;
 }
 // How many warheads each city takes. One apiece down the list first, then the
@@ -4839,40 +4926,129 @@ function exAllocate(n, cities) {
  *               honest way to scatter them is around the population, which is
  *               also where the infrastructure is; they never land in the sea
  *               or across a border by construction. */
-function exPlan(n, countries, rnd) {
+// Where the k-th warhead on one aim point lands.
+//
+// For a POINT target the answer is: on the point. US Army doctrine is
+// explicit that extra weapons against one desired ground zero stack there,
+// as redundancy against a missile failing, rather than tiling around it; a
+// small offset is kept only so the marks do not hide each other.
+//
+// For a CITY, which is an area target, they spread. The Toon family's
+// spacing scales as the square root of yield (6 km at 15 kt, 15.5 km at
+// 100 kt), and the pattern is bounded by how big the city actually is,
+// estimated from its population at a typical urban density.
+function exOffset(lat, lon, k, kt, pop, stack) {
+  if (!k) return [lat, lon];
+  if (stack) {                       // redundancy on one aim point
+    const [lo, la] = destPoint(lat, lon, (k * 137.5) % 360, 300 + 120 * k);
+    return [la, lo];
+  }
+  const space = EX_SPACE_K * Math.sqrt(Math.max(1, kt || 100)) * 1000;
+  // urban radius from population at ~3,000 people per square kilometre
+  const cityR = pop > 0 ? Math.sqrt((pop / 3000) / Math.PI) * 1000 : 8000;
+  const ring = Math.ceil((Math.sqrt(12 * k + 1) - 1) / 6);   // hex ring index
+  const inRing = Math.max(1, 6 * ring);
+  const step = k - (3 * (ring - 1) * ring + 1);
+  const rad = Math.min(ring * space, Math.max(space, cityR));
+  const [lo, la] = destPoint(lat, lon, (step / inRing) * 360 + ring * 23, rad);
+  return [la, lo];
+}
+
+/* The target list, built by CLASS rather than by population alone.
+ *
+ * Each class gets its share of the salvo from EX_DOCTRINE, then places its
+ * points where that kind of target actually is:
+ *   cf     the other side's own launch sites, from the force data, two
+ *          warheads each, which is the published convention for a hardened
+ *          silo and is redundancy against failure rather than area coverage
+ *   mil    other military: the same sites again once the doubles are used,
+ *          then the largest cities' airfields and garrisons, approximated
+ *   infra  power, chemical, refining, ports and war-supporting industry, in
+ *          the proportions NAPB-90 counted, scattered at the distances such
+ *          plants sit from the population they serve
+ *   city   the population itself, largest first
+ * Hardened targets take SURFACE bursts, everything else air bursts.
+ */
+function exPlan(n, countries, rnd, mode) {
+  const doc = EX_DOCTRINE[mode] || EX_DOCTRINE.mixed;
   const aims = [];
   const set = new Set(countries);
-  for (const p of Object.values(NUKE_POWERS))
-    for (const s of exPowerSites(p)) {
-      if (s.k === "sub") continue;               // a boat at sea is not a target
-      if (!set.has(s.c || p.name)) continue;
-      for (let i = 0; i < 2 && aims.length < n; i++)
-        aims.push({ lat: s.lat, lon: s.lon, k: "cf",
-                    name: s.n + (s.c ? "" : ", " + p.name), idx: i });
-    }
   const cities = exTargets(countries);
-  const alloc = exAllocate(Math.max(0, n - aims.length), cities);
-  for (let ci = 0; ci < cities.length; ci++)
+  const push = (o) => { if (aims.length < n) aims.push(o); };
+
+  // every fixed launch site the targeted countries host, including weapons
+  // another country owns but keeps on their soil
+  const forces = [];
+  for (const p of Object.values(NUKE_POWERS))
+    for (const st of exPowerSites(p)) {
+      if (st.k === "sub") continue;             // a boat at sea is not a target
+      if (!set.has(st.c || p.name)) continue;
+      forces.push({ lat: st.lat, lon: st.lon, r: st.r || 0,
+                    name: st.n + (st.c ? "" : ", " + p.name),
+                    hard: st.k === "silo" });
+    }
+  const want = k => Math.round(n * doc[k]);
+
+  // 1. counterforce, two per site, surface burst on the hardened ones
+  let cfWant = Math.min(want("cf"), forces.length * 2);
+  for (let pass = 0; pass < 2 && cfWant > 0; pass++)
+    for (const f of forces) {
+      if (cfWant <= 0) break;
+      // a silo field is a field: each warhead goes to a different silo in it
+      const [lo, la] = f.r > 3000
+        ? destPoint(f.lat, f.lon, rnd() * 360, f.r * Math.sqrt(rnd()))
+        : [f.lon, f.lat];
+      push({ lat: la, lon: lo, k: "cf", name: f.name, idx: 0,
+             surface: f.hard, stack: true });
+      cfWant--;
+    }
+
+  // 2. other military: airfields and garrisons, which cluster near the larger
+  // cities; placed at the edge of them rather than on the centre
+  const milN = want("mil");
+  for (let i = 0; i < milN && cities.length; i++) {
+    const c = cities[Math.min(cities.length - 1,
+      Math.floor(Math.pow(rnd(), 1.6) * Math.min(cities.length, 400)))];
+    const [lo, la] = destPoint(c.lat, c.lon, rnd() * 360, 8000 + rnd() * 45000);
+    push({ lat: la, lon: lo, k: "mil", name: "military site near " + c.name,
+           idx: 0, surface: rnd() < 0.5, stack: true });
+  }
+
+  // 3. war-supporting infrastructure, in NAPB-90's class proportions
+  const infraN = want("infra");
+  const wTot = EX_INFRA.reduce((a, x) => a + x.w, 0);
+  for (const cls of EX_INFRA) {
+    const many = Math.round(infraN * cls.w / wTot);
+    for (let i = 0; i < many && cities.length; i++) {
+      // weighted to the bigger places, where the plants are
+      const c = cities[Math.min(cities.length - 1,
+        Math.floor(Math.pow(rnd(), 2.0) * cities.length))];
+      const [near, far] = cls.near;
+      const [lo, la] = destPoint(c.lat, c.lon, rnd() * 360,
+                                 near + rnd() * (far - near));
+      push({ lat: la, lon: lo, k: "infra", name: cls.name + ", " + c.name,
+             idx: 0, surface: false, stack: true });
+    }
+  }
+
+  // 4. the population, largest first
+  const cityN = Math.max(0, n - aims.length);
+  const alloc = exAllocate(cityN, cities);
+  for (let ci = 0; ci < cities.length && aims.length < n; ci++)
     for (let k = 0; k < alloc[ci] && aims.length < n; k++)
-      aims.push({ lat: cities[ci].lat, lon: cities[ci].lon, k: "city",
-                  name: cities[ci].name, city: ci, idx: k });
+      push({ lat: cities[ci].lat, lon: cities[ci].lon, k: "city",
+             name: cities[ci].name, city: ci, idx: k, surface: false,
+             pop: cities[ci].pop });
+
+  // 5. anything still unallocated (a small country under a large arsenal)
+  // goes to dispersed military sites rather than piling further onto cities
   while (aims.length < n && cities.length) {
     const c = cities[(rnd() * cities.length) | 0];
     const [lo, la] = destPoint(c.lat, c.lon, rnd() * 360, 20000 + rnd() * 180000);
-    aims.push({ lat: la, lon: lo, k: "disp", name: "dispersed site", idx: 0 });
+    push({ lat: la, lon: lo, k: "disp", name: "dispersed site", idx: 0,
+           surface: false, stack: true });
   }
-  return { aims, cities, alloc };
-}
-// where the k-th warhead on a city goes: the first on the centre, the rest on
-// a golden-angle spiral out to about 18 km, which is the shape a real laydown
-// on an urban area has and the reason the damage rings come out lobed
-function exOffset(lat, lon, k) {
-  if (k === 0) return [lat, lon];
-  // the outer limit only binds in the overkill case (a hundred warheads on
-  // one city, which happens when a big arsenal meets a small country)
-  const rad = Math.min(40000, EX_SPREAD * Math.sqrt(k));
-  const [lo, la] = destPoint(lat, lon, (k * 137.508) % 360, rad);
-  return [la, lo];
+  return { aims, cities, alloc, doc };
 }
 
 // what could actually fly: the deployed warheads by default (the ones on
@@ -4881,37 +5057,6 @@ function exOffset(lat, lon, k) {
 // with a note, because zero would mean nothing launches at all.
 function exCount(P, mode) {
   return mode === "stock" ? P.stock : (P.deployed || P.stock);
-}
-
-/* A power's launch sites, flattened out of its delivery SYSTEMS. Each system
- * (Minuteman III, Trident II, Yars, DF-41 ...) knows how many launchers it
- * has, how many warheads each carries in practice, what those warheads yield
- * and where they are based, so the site inherits all of it rather than the
- * whole country sharing one number. A power that still carries the older flat
- * `sites` list keeps working, so the data can be replaced country by country. */
-function exPowerSites(P) {
-  if (P._sites) return P._sites;
-  let out;
-  if (P.systems) {
-    out = [];
-    for (const sy of P.systems) {
-      const wh = (sy.launchers || 0) * (sy.wpl || 1);
-      const per = wh / Math.max(1, sy.sites.length);
-      for (const st of sy.sites)
-        out.push({ ...st,
-          // a road-mobile launcher fires from land like a silo; what makes it
-          // different is the radius it disperses over, which the site carries
-          k: sy.leg === "mobile" ? "silo" : sy.leg,
-          kt: sy.kt, mirv: Math.max(1, Math.round(sy.wpl || 1)),
-          sys: sy.name, wh: st.share != null ? wh * st.share : per });
-    }
-  } else {
-    const tot = P.sites.reduce((a, s) => a + (s.w || 1), 0) || 1;
-    out = P.sites.map(s => ({ ...s, kt: P.kt, mirv: P.mirv, sys: null,
-                              wh: (P.deployed || P.stock) * (s.w || 1) / tot }));
-  }
-  P._sites = out;
-  return out;
 }
 
 // One or more powers firing together. A bloc's launch sites are the union of
@@ -4952,6 +5097,37 @@ function exForce(keys, mode, label) {
            wh: one ? one.wh : list.map(k => NUKE_POWERS[k].name).join(", ") };
 }
 
+/* A power's launch sites, flattened out of its delivery SYSTEMS. Each system
+ * (Minuteman III, Trident II, Yars, DF-41 ...) knows how many launchers it
+ * has, how many warheads each carries in practice, what those warheads yield
+ * and where they are based, so the site inherits all of it rather than the
+ * whole country sharing one number. A power that still carries the older flat
+ * `sites` list keeps working, so the data can be replaced country by country. */
+function exPowerSites(P) {
+  if (P._sites) return P._sites;
+  let out;
+  if (P.systems) {
+    out = [];
+    for (const sy of P.systems) {
+      const wh = (sy.launchers || 0) * (sy.wpl || 1);
+      const per = wh / Math.max(1, sy.sites.length);
+      for (const st of sy.sites)
+        out.push({ ...st,
+          // a road-mobile launcher fires from land like a silo; what makes it
+          // different is the radius it disperses over, which the site carries
+          k: sy.leg === "mobile" ? "silo" : sy.leg,
+          kt: sy.kt, mirv: Math.max(1, Math.round(sy.wpl || 1)),
+          sys: sy.name, wh: st.share != null ? wh * st.share : per });
+    }
+  } else {
+    const tot = P.sites.reduce((a, s) => a + (s.w || 1), 0) || 1;
+    out = P.sites.map(s => ({ ...s, kt: P.kt, mirv: P.mirv, sys: null,
+                              wh: (P.deployed || P.stock) * (s.w || 1) / tot }));
+  }
+  P._sites = out;
+  return out;
+}
+
 // Hilbert index of a lat/lon, used to put aim points in an order where
 // neighbours in the list are neighbours on the ground. Warheads are handed
 // out in contiguous runs, so this is what keeps one missile's warheads
@@ -4973,14 +5149,14 @@ function exHilbert(lat, lon, order = 10) {
   return d;
 }
 
-function exBuild(srcKey, countries, mode) {
+function exBuild(srcKey, countries, mode, doctrine) {
   const bloc = NUKE_BLOCS[srcKey];
   const F = exForce(bloc ? bloc.fire : srcKey, mode, bloc ? bloc.name : null);
   if (!F) return { error: "No such launching power." };
   const P = F;                          // downstream reads the force
   const rnd = exRand(0x5eed);
   const n = F.n;
-  const { aims, cities, alloc } = exPlan(n, countries, rnd);
+  const { aims, cities, alloc, doc } = exPlan(n, countries, rnd, doctrine);
   if (!aims.length) return { error: "Nothing to aim at in the chosen countries." };
   // A MIRVed missile does not scatter its warheads across a continent. The
   // bus releases them one at a time, nudging between releases, and what that
@@ -5067,10 +5243,15 @@ function exBuild(srcKey, countries, mode) {
     loaded++; quota[owner]--;
     // several warheads on one aim point land as a pattern across it, not on
     // the same square metre; a single one lands on the point
-    const [la, lo] = aim.idx ? exOffset(aim.lat, aim.lon, aim.idx)
-                             : [aim.lat, aim.lon];
+    const [la, lo] = exOffset(aim.lat, aim.lon, aim.idx, st.kt, aim.pop,
+                              aim.stack);
+    // a surface burst reaches about 0.72 of an air burst's radius for the
+    // same yield, applied as an effective yield so the per-burst scaling in
+    // the damage field carries it through unchanged
+    const ktEff = st.kt * (aim.surface ? Math.pow(EX_SURFACE_R, 3) : 1);
     shots.push({ si, kind: st.k, owner, city: aim.city, aimKind: aim.k,
-                 kt: st.kt, missile, cap: Math.max(1, st.mirv || 1),
+                 kt: st.kt, ktEff, surface: !!aim.surface,
+                 missile, cap: Math.max(1, st.mirv || 1),
                  sys: st.sys, name: aim.name, lat: la, lon: lo, pad });
   }
   // Everything leaves at once (RW's ruling): a real salvo takes minutes to
@@ -5086,11 +5267,16 @@ function exBuild(srcKey, countries, mode) {
   }
   const live = shots.filter(s => s.f);
   const bal = live.filter(s => s.f.kind === "bal");
-  const kinds = { cf: 0, city: 0, disp: 0 };
-  let maxKt = 0;
-  for (const s of live) { kinds[s.aimKind]++; maxKt = Math.max(maxKt, s.kt); }
+  const kinds = { cf: 0, mil: 0, infra: 0, city: 0, disp: 0 };
+  let maxKt = 0, surface = 0;
+  for (const s of live) {
+    kinds[s.aimKind] = (kinds[s.aimKind] || 0) + 1;
+    if (s.surface) surface++;
+    maxKt = Math.max(maxKt, s.kt);
+  }
   return { power: P, key: srcKey, countries, cities, alloc, shots: live, kinds,
-           mode: mode || "deployed", n, maxKt,
+           mode: mode || "deployed", n, maxKt, surface,
+           doctrine: doctrine || "mixed", doc,
            dropped: failed, t: 0, hit: 0, running: false,
            lastImpact: -99, pending: [], crosses: [],
            force: F,
@@ -5111,7 +5297,8 @@ function exchangeStart() {
   if (!chosen.length || !(NUKE_POWERS[src] || NUKE_BLOCS[src])) return;
   clearRun();
   const t0 = performance.now();
-  const e = exBuild(src, chosen, $("nukeCount").value);
+  const e = exBuild(src, chosen, $("nukeCount").value,
+                    $("nukeDoctrine").value);
   if (e.error) { setHint(e.error); return; }
   e.buildMs = performance.now() - t0;
   exch = e;
@@ -5189,7 +5376,7 @@ function exchangeStep(realDt) {
   if (landed.length) {
     e.hit += landed.length;
     for (const s of landed) {
-      e.pending.push([s.lat, s.lon, s.kt]);
+      e.pending.push([s.lat, s.lon, s.ktEff || s.kt]);
       e.crosses.push(s.lat, s.lon, (terrainAt(s.lat, s.lon) ?? 0) + GROUND_LIFT);
     }
     // batch the field rebuild: a wave can land hundreds of warheads in one
@@ -5303,6 +5490,14 @@ function nukeFill() {
     }
     sel.appendChild(g);
   };
+  const dsel = $("nukeDoctrine");
+  if (!dsel.options.length)
+    for (const [k, d] of Object.entries(EX_DOCTRINE)) {
+      const o = document.createElement("option");
+      o.value = k; o.textContent = d.name;
+      dsel.appendChild(o);
+    }
+  dsel.value = "mixed";
   grp("One country", Object.entries(NUKE_POWERS).map(([k, p]) =>
     [k, `${p.name} (${p.stock.toLocaleString()} warheads)`]));
   // a bloc fires only what its members actually own: NATO shoots American,
@@ -5355,7 +5550,8 @@ function nukePlan() {
   if (!F) return;
   const list = [...nukeSel];
   const n = F.n;
-  const { aims, cities, alloc } = exPlan(n, list, exRand(0x5eed));
+  const { aims, cities, alloc, doc } = exPlan(n, list, exRand(0x5eed),
+                                              $("nukeDoctrine").value);
   const go = $("nukeGo");
   go.disabled = !aims.length;
   if (!aims.length) {
@@ -5364,17 +5560,19 @@ function nukePlan() {
       : "Pick at least one country to aim at.";
     return;
   }
-  const k = { cf: 0, city: 0, disp: 0 };
-  for (const a of aims) k[a.k]++;
+  const k = {};
+  let surf = 0;
+  for (const a of aims) { k[a.k] = (k[a.k] || 0) + 1; if (a.surface) surf++; }
   const cityN = alloc.filter(a => a > 0).length;
+  const bit = (n2, what) => n2 ? `${n2.toLocaleString()} ${what}` : null;
   $("nukePlan").innerHTML =
-    `${n.toLocaleString()} warheads: `
-    + (k.cf ? `${k.cf} on ${k.cf / 2} of their own launch sites, ` : "")
-    + `${k.city.toLocaleString()} on ${cityN.toLocaleString()} of `
-    + `${cities.length.toLocaleString()} cities`
-    + (k.disp ? `, ${k.disp.toLocaleString()} on dispersed military sites once the `
-        + `cities are saturated` : "")
-    + (cities.length ? ` &middot; ${cities[0].name} takes ${alloc[0]}` : "") + ".";
+    `<b>${n.toLocaleString()} warheads.</b> `
+    + [bit(k.cf, "on their launch sites"), bit(k.mil, "on other military"),
+       bit(k.infra, "on power, chemicals, refining and ports"),
+       bit(k.city, `on ${cityN.toLocaleString()} of ${cities.length.toLocaleString()} cities`),
+       bit(k.disp, "on dispersed sites")].filter(Boolean).join(", ")
+    + `. ${surf.toLocaleString()} surface bursts on the hardened ones, the rest `
+    + `air burst.<br><span style="color:#9fb4c8">${doc.note}.</span>`;
 }
 function nukeOpen() {
   nukeFill(); nukeSrcNote(); nukeChips(); nukePlan();
@@ -5487,6 +5685,7 @@ function nukeCountryRows(q) {
 (() => {
   $("nukeSrc").addEventListener("change", () => { nukeSrcNote(); nukePlan(); });
   $("nukeCount").addEventListener("change", () => { nukeSrcNote(); nukePlan(); });
+  $("nukeDoctrine").addEventListener("change", nukePlan);
   $("nukeCountry").addEventListener("input", () => {
     clearTimeout(nukeTimer);
     nukeTimer = setTimeout(() => nukeCountryRows($("nukeCountry").value.trim()), 60);
@@ -5494,6 +5693,15 @@ function nukeCountryRows(q) {
   // the blocs announce themselves on focus rather than waiting to be guessed
   $("nukeCountry").addEventListener("focus", () => {
     if (!$("nukeCountry").value.trim()) nukeCountryRows("");
+  });
+  // and the list belongs to the focused box: clicking away puts it away.
+  // The delay is what lets a click on a row still land, since a mouse press
+  // fires blur before the click reaches the row's own handler.
+  $("nukeCountry").addEventListener("blur", () => {
+    setTimeout(() => {
+      if (document.activeElement !== $("nukeCountry"))
+        $("nukeCountryResults").innerHTML = "";
+    }, 180);
   });
   $("nukeCountry").addEventListener("keydown", e => {
     e.stopPropagation();
@@ -5542,12 +5750,14 @@ window.__sim = {
   // country picker is a search box, so selection is set directly
   NUKE_POWERS, exTargets, exAllocate, exShotFlight, exAirFlight, exPos, exBuild,
   exPlan, exCount, exRand, nukeCountryRows, exPowerSites, exForce,
+  EX_DOCTRINE, exOffset,
   NUKE_BLOCS,
   get exch() { return exch; },
-  exSelect: (src, countries, mode) => {
+  exSelect: (src, countries, mode, doctrine) => {
     nukeFill();
     $("nukeSrc").value = src; nukeSel = new Set(countries);
     if (mode) $("nukeCount").value = mode;
+    if (doctrine) $("nukeDoctrine").value = doctrine;
     nukeSrcNote(); nukeChips(); nukePlan();
   },
   exLaunch: () => exchangeStart(),
