@@ -186,7 +186,11 @@
      bottom-left corner zone, drag anywhere else to look, hold-buttons bottom
      right. The ✓/✕ pair stands in for the ladder's left/right click. --- */
   #glc { touch-action:none; }
-  #touchUI { position:fixed; inset:0; display:none; pointer-events:none; z-index:25; }
+  /* left/top + explicit size rather than inset:0, because the touch UI is
+     pinned to the VISUAL viewport in JS (syncTouchUI) and inset would fight
+     the width/height it writes */
+  #touchUI { position:fixed; left:0; top:0; width:100%; height:100%;
+             transform-origin:0 0; display:none; pointer-events:none; z-index:25; }
   body.touch #touchUI { display:block; }
   body.touch #crosshair { display:block; }
   /* dark chrome, not nettlecombe's translucent white: that page is dark,
@@ -212,9 +216,11 @@
      left panel header (centred it covered the follow button), and the
      bottom stack clears the button columns */
   body.touch #citySearch { top:54px; left:10px; transform:none; width:210px; }
-  body.touch #icbmBar { top:96px; }
-  /* the expanded left panel covers their spot: they yield while it is open */
-  body.touch.ctlOpen #citySearch, body.touch.ctlOpen #icbmBar { display:none; }
+  body.touch #icbmBar, body.touch #nukeBar { top:96px; left:10px; transform:none; }
+  /* the expanded left panel used to HIDE them; they are pushed below it
+     instead (RW), the way the follow button sits under the flight-data
+     panel. layoutTouchLeft() writes the top, since the panel's height
+     changes with the collapse state and the wind fold. */
   body.touch #bottomStack { left:6px; right:150px; }
   /* the bottom panels are display-only; on touch they must not swallow the
      joystick zone or look-drags under them */
@@ -2211,14 +2217,39 @@ function toggleMenus() {
 // Both start collapsed on touch, where they would cover most of a phone,
 // and open on desktop; the follow button under the flight-data panel keeps
 // the chase camera reachable while that panel is shut.
+// Phone layout for the left column: the city search and whichever mission
+// bar is showing sit under the left panel's header when it is collapsed, and
+// under the WHOLE panel when it is open. A function declaration, so the
+// bindCollapse call below can reach it during setup (the TDZ lesson from the
+// aircraft layer: a boot-time caller must never read a `let` above its own
+// declaration). Clamped to stay on screen, since the panel may be nearly
+// full height on a small phone; it scrolls internally at that point.
+function layoutTouchLeft() {
+  if (!isTouch) return;
+  const open = document.body.classList.contains("ctlOpen");
+  const bottom = open ? $("ctl").getBoundingClientRect().bottom + 8 : 54;
+  const top = Math.round(Math.min(bottom, innerHeight - 96));
+  $("citySearch").style.top = top + "px";
+  for (const id of ["icbmBar", "nukeBar"]) {
+    const el = $(id);
+    if (el) el.style.top = (top + 42) + "px";
+  }
+}
+if (isTouch) {
+  addEventListener("resize", layoutTouchLeft);
+  addEventListener("orientationchange", layoutTouchLeft);
+  // the panel's height changes on its own too: the wind fold, the aim note
+  // swapping text per preset, the exchange's country chips wrapping
+  if (window.ResizeObserver) new ResizeObserver(layoutTouchLeft).observe($("ctl"));
+}
 function bindCollapse(pid, hid, start) {
   const p = $(pid), head = $(hid);
   const set = c => {
     p.classList.toggle("collapsed", c);
     head.querySelector(".caret").innerHTML = c ? "&#9656;" : "&#9662;";
     // on a phone the expanded left panel covers the search's spot, so the
-    // search (and the icbm bar) yield to it while it is open
-    if (pid === "ctl") document.body.classList.toggle("ctlOpen", !c);
+    // search and the mission bars are pushed below it (RW)
+    if (pid === "ctl") { document.body.classList.toggle("ctlOpen", !c); layoutTouchLeft(); }
   };
   head.addEventListener("click", () => set(!p.classList.contains("collapsed")));
   set(start);
@@ -2787,6 +2818,28 @@ if (isTouch) {
   document.addEventListener("touchmove", e => {
     if (e.touches.length > 1) e.preventDefault();
   }, { passive: false });
+}
+// RW reported the corner buttons still shooting off screen while looking
+// around, after the pinch lockout above. Refusing gestures is a fix that has
+// to catch every route by which the visual viewport can move (a pinch that
+// slips through, iOS's URL bar, the keyboard, rubber-banding), and the
+// harness cannot exhibit any of them: an emulated two-finger drag measures
+// scale 1, zero scroll and zero offset, buttons stationary at 16/24 px.
+// So stop refusing and start FOLLOWING: position:fixed anchors to the layout
+// viewport, and the layout viewport is exactly the thing that stops matching
+// the screen. Pinning the touch UI to window.visualViewport makes the
+// buttons ride whatever the user can actually see, whatever moved it.
+function syncTouchUI() {
+  const vv = window.visualViewport, el = $("touchUI");
+  if (!vv || !el) return;
+  el.style.width = vv.width + "px";
+  el.style.height = vv.height + "px";
+  el.style.transform = `translate(${vv.offsetLeft}px, ${vv.offsetTop}px)`;
+}
+if (isTouch && window.visualViewport) {
+  visualViewport.addEventListener("resize", syncTouchUI);
+  visualViewport.addEventListener("scroll", syncTouchUI);
+  syncTouchUI();
 }
 const TOUCH_LOOK = 0.0045 * 180/Math.PI;      // deg per px, nettlecombe's feel
 const STICK_R = 52;
