@@ -45,6 +45,11 @@
   #bottomStack .panel { position:static; transform:none; pointer-events:auto; }
   #landPanel { display:none; text-align:center; }
   #flyHint { text-align:center; color:#cdd6df; font-size:12px; max-width:560px; }
+  /* the narrator and landing panels wrap inside the same width the hint
+     uses; without a cap a wordy phase line stretches the box across the map.
+     border-box, or the panel's own 12 px of padding sits outside the cap and
+     the box lands 584 px wide (measured) */
+  #phasePanel, #landPanel { max-width:560px; box-sizing:border-box; }
   #flyHint b { color:#fff; font-weight:600; }
 
   h1 { font-size:15px; margin:0 0 2px; color:#fff; }
@@ -302,13 +307,17 @@
       <option value="fifty">Rifle, .50 BMG M33 ball</option>
       <option value="yamato">Naval gun, Yamato 46 cm</option>
       <option value="paris">Paris Gun, 1918 (130 km)</option>
-      <option value="sound">Sound of a Krakatoa-sized bang</option>
       <option value="manhole">Manhole cover, Pascal-B (1957)</option>
+      <option value="newton">Newton's cannonball (Everest)</option>
+      <option value="" disabled>&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</option>
       <option value="icbm">ICBM, city to city</option>
       <option value="exchange">Nuclear exchange, country to country</option>
-      <option value="newton">Newton's cannonball (Everest)</option>
+      <option value="" disabled>&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</option>
       <option value="falcon9">Falcon 9, ascent to orbit</option>
       <option value="iss">ISS, released in orbit</option>
+      <option value="" disabled>&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;&#9472;</option>
+      <option value="sound">Sound of a Krakatoa-sized bang</option>
+      <option value="stratos">Stratos jump, 2012 (39 km)</option>
     </select><span id="badge"></span></span>
   </label>
 
@@ -365,7 +374,7 @@
   <details id="paramsBox">
     <summary>Parameters (preset-managed)</summary>
     <label><span>Projectile</span>
-      <select id="ptype"><option value="balloon">helium balloon</option><option value="ball">ball</option><option value="rocket">rocket (staged, powered)</option><option value="icbm">ICBM (guided)</option><option value="sound">sound wave</option></select></label>
+      <select id="ptype"><option value="balloon">helium balloon</option><option value="ball">ball</option><option value="rocket">rocket (staged, powered)</option><option value="icbm">ICBM (guided)</option><option value="jumper">stratosphere jumper</option><option value="sound">sound wave</option></select></label>
     <label><span>Launch speed (m/s)</span><input id="speed" type="number" step="0.1" min="0"></label>
     <label><span>Release height (m AGL)</span><input id="relH" type="number" step="0.1" min="0"></label>
     <label><span>Integrator dt (s)</span><input id="dtStep" type="number" step="0.001" min="0.0005"></label>
@@ -721,6 +730,56 @@ const PRESETS = {
     mCd: 0.2,          // fallback only
     mRpm: 0,           // spin-stabilised about the long axis: no Magnus
     mCl: 0,
+  },
+  // Red Bull Stratos, 14 October 2012: Felix Baumgartner steps off a balloon
+  // gondola at 38,969.4 m over Roswell and becomes the first human supersonic
+  // without a vehicle: 1,357.6 km/h (Mach 1.25) near 27.8 km, 4:20 of
+  // freefall, main canopy around 1,500 m AGL, about nine minutes end to end.
+  // (Alan Eustace exited higher in 2014, 41.4 km, but rode a drogue the whole
+  // way; the free peak is still Felix's.)
+  //
+  // The preset inverts the question: you pick where he should LAND, and the
+  // exit point is solved from the wind by flying the descent in advance and
+  // moving the release by the measured miss (the same live-feedback loop the
+  // ICBM's aim uses; there is no closed-form answer because the drift is an
+  // integral over a forecast). During the fall he keeps re-predicting his
+  // landing and steers for the mark with exactly the authority a real jumper
+  // has: essentially none while supersonic in stratospheric air (steering
+  // force scales with dynamic pressure), weak body-tracking lower down, and a
+  // ~12 m/s ram-air canopy at the end. The air he actually falls through is
+  // the forecast plus a seeded forecast-error field, so the predicted spot
+  // wanders and the landing misses by what live feedback cannot recover:
+  // that residual is the point of the preset.
+  stratos: {
+    ptype: "jumper",
+    aimless: true,     // one click, and the click is the landing mark
+    speed: 0, angle: 90, relH: 0,
+    dt: 0.02,          // s; canopy inflation is the fastest transient (~4 s
+                       // CdA ramp), and 20 ms keeps RK4 far inside it
+    drag: true,        // drag off would be a 90 s lawn dart, but it is honest
+    timeSpeed: 1,      // the real jump is ~9 min; arrow keys for the impatient
+    jExitAlt: 38969,   // m MSL, the official exit altitude
+    jMass: 118,        // kg, jumper + pressure suit + rig, the usual figure
+    jCdA: 0.58,        // m^2, freefall drag area of the suited body.
+                       // CALIBRATED to the official peak of 377.1 m/s near
+                       // 27.8 km: three ISA runs of verify/stratos_cal.js
+                       // measure 375.7/374.6/381.6 (mean 377.3) peaking at
+                       // 27.2-27.6 km; the +-8% body-position wander puts a
+                       // few m/s of honest scatter on any one fall. Sea-level
+                       // terminal comes out 57 m/s, inside the 50-60 range
+                       // skydivers measure. Unfitted check: freefall runs
+                       // 240-245 s against his 260, about 7% short, likely
+                       // his early head-down streamlining this constant-area
+                       // model does not carry.
+    jCanopyCdA: 60,    // m^2 effective, for a ~5.8 m/s sink at 1,000 m MSL
+    jDeployAgl: 1500,  // m AGL, where Felix pulled
+    jAirspd: 12,       // m/s, ram-air forward airspeed: his whole authority
+                       // under canopy, and a surface wind above it cannot be
+                       // penetrated at all
+    jTrack: 0.18,      // fraction of drag force a suited body can redirect by
+                       // tracking; only applied subsonic, so stratospheric
+                       // authority rounds to nothing by physics, not by rule
+    mMass: 0, mDiam: 0, mCd: 0, mRpm: 0, mCl: 0,
   },
   // Not a projectile at all: the bang itself. A sound wave leaves the point
   // in every direction at once, so what expands is a ring on the ground
@@ -2254,6 +2313,10 @@ function flyHintHtml() {
     return "Step 1 of 3 &middot; <b>left click anywhere</b>: the cannon is already on "
       + pr.site.name + ". Then aim the heading, then the angle (keep 0 to fire "
       + "level, as Newton drew it)." + esc;
+  if (oneClick && pr.ptype === "jumper")
+    return "<b>Left click</b> marks where he should land &middot; the balloon exit "
+      + "point 39 km up is solved from the wind by flying the descent in advance, "
+      + "then he steps off and steers for your mark the whole way down." + esc;
   if (oneClick && pr.ptype === "sound")
     return "<b>Left click</b> sets off the bang at the crosshair &middot; the ring expands "
       + "in every direction at the speed of sound, so there is nothing to aim." + esc;
@@ -2276,6 +2339,7 @@ function flyHintHtml() {
 function phaseHtml(s) {
   const T = "T+" + fmtClock(s.t) + " &middot; ";
   if (s.phase === "boost" || s.phase === "rv") return icbmPhaseHtml(s, T);
+  if (s.phase === "jump" || s.phase === "canopy") return jumperPhaseHtml(s, T);
   if (s.phase === "rocket") {
     if (s.done && s.orbit)
       return T + `<b>In orbit</b> &middot; ${Math.round(s.orbit.perigee/1000)} &times; `
@@ -2311,6 +2375,45 @@ function phaseHtml(s) {
   const bg = groundUnder(s, bl[0], bl[1]);
   return T + `<b>Ballistic</b> &middot; ${vU > 0 ? "climbing" : "descending"}, `
     + `${fmtAlt(Math.max(0, simAlt(s) - bg))} AGL`;
+}
+// The jumper's running commentary: what phase the fall is in, how it compares
+// to the 2012 record jump, and the live feedback itself: where he lands if he
+// stops steering, against what authority he has left to close that gap.
+function jumperPhaseHtml(s, T) {
+  const h = simAlt(s);
+  const ll = simLatLon(s);
+  const agl = Math.max(0, h - groundUnder(s, ll[0], ll[1]));
+  const spd = V3.norm(s.v);
+  const mach = spd / SOUND(atmAt(h).T);
+  let head;
+  if (s.phase === "canopy") head = "<b>Under canopy</b>";
+  else if (mach >= 1) head = "<b>Supersonic freefall</b>";
+  else if (s.pkT) head = "<b>Thickening air braking the fall</b>";
+  else if (s.t < 20) head = "<b>Stepping off into near-vacuum</b>";
+  else head = "<b>Freefall</b>";
+  const rows = [];
+  rows.push(T + head + ` &middot; ${fmtAlt(agl)} AGL &middot; `
+    + `${Math.round(spd*3.6).toLocaleString()} km/h`
+    + (s.phase !== "canopy" && mach >= 0.4 ? ` (Mach ${mach.toFixed(2)})` : "")
+    + (s.vMax > 30 && spd < 0.98*s.vMax
+       ? ` &middot; peak ${Math.round(s.vMax*3.6).toLocaleString()} of Baumgartner's 1,357.6` : ""));
+  if (s.pred && stratosTarget && s.predMiss != null) {
+    const pm = s.predMiss;
+    let auth;
+    if (s.phase === "canopy") {
+      const reach = s.p.jAirspd * agl / 5.8;
+      auth = pm < 30 ? "over the mark, braking"
+        : reach > pm*1.3 ? `reach left ${fmtDist(reach)}: he makes it`
+        : reach > pm ? `reach left ${fmtDist(reach)}: barely enough`
+        : `reach left ${fmtDist(reach)}: he lands short`;
+    } else auth = mach > 0.9
+      ? "no steering at this Mach: he watches it drift"
+      : "tracking only: a fraction of drag, thin up here";
+    rows.push(`unsteered he lands <b>${fmtDist(pm)}</b> off (amber cross) &middot; ${auth}`);
+  }
+  for (const L of s.log.slice(-2))
+    rows.push(`<span style="color:#9fb4c8">${L}</span>`);
+  return rows.join("<br>");
 }
 function updatePhasePanel() {
   const el = $("phasePanel");
@@ -2540,6 +2643,9 @@ function previewKey() {
 }
 function maybeComputePreview() {
   if (launchStage !== "angle" || launch.groundElev == null) return;
+  // the jumper has no ghost: his "preview" is the live landing prediction,
+  // and the click-to-exit window would otherwise draw a fall from the pin
+  if (PRESETS[$("preset").value]?.ptype === "jumper") return;
   const now = performance.now();
   if (now - lastPreviewAt < 250) return;
   const key = previewKey();
@@ -2804,7 +2910,7 @@ function clearRun() {
   globe.clearLines("shadow"); globe.clearLines("shadowtail");
   line3d.clear("track"); line3d.clear("tail"); line3d.clear("drop"); line3d.clear("vel");
   line3d.clear("velg"); line3d.clear("ghost"); globe.clearLines("soundring");
-  globe.clearZones("blast");
+  globe.clearZones("blast"); globe.clearPoints("spred");
   line3d.tagPoint = null; $("objTag").style.display = "none"; $("objDot").style.display = "none";
   trackShadow = null; track3d = null; velArrowState = null; liveTail = null;
   $("landPanel").style.display = "none";
@@ -2829,7 +2935,8 @@ function readParams() {
                      "qStart","qEnd","qThrottle","gLimit","vertUntil","kickUntil",
                      "kickDeg","targetAlt","guideTau","site","azimuth","audibleKm",
                      "orbital","noAngle","targeted","stages","rvMass","rvDiam",
-                     "rvCd","busMass","progUntil"])
+                     "rvCd","busMass","progUntil","jExitAlt","jMass","jCdA",
+                     "jCanopyCdA","jDeployAgl","jAirspd","jTrack"])
       if (k in pr) p[k] = pr[k];
   }
   return p;
@@ -2857,6 +2964,7 @@ function makeState(p, lat, lon, g0, headingDeg, angleDeg, preview) {
     phase: p.ptype === "balloon" ? "balloon"
          : p.ptype === "rocket" ? "rocket"
          : p.ptype === "icbm" ? "boost"
+         : p.ptype === "jumper" ? "jump"
          : p.ptype === "sound" ? "sound" : "ball",
     trackLen: 0, calmSince: null, burstInfo: null, dtau: 0, lastTauT: 0,
     lastTrackT: -1, lastTrack3dT: -1, lastTerrainCheckPos: [lat, lon],
@@ -2880,6 +2988,25 @@ function makeState(p, lat, lon, g0, headingDeg, angleDeg, preview) {
     s.mass = p.r1.dry + p.r1.prop + p.r2.dry + p.r2.prop + p.fairing + p.payload;
     s.prop = p.r1.prop;
     s.m0 = s.mass; s.log = []; s.maxQ = null; s.sepAt = null;
+  } else if (p.ptype === "jumper") {
+    // exit from the balloon at the solved release point (p.jump), not the
+    // clicked one: the click is where he should land. Initial velocity is
+    // the wind at exit altitude, because a balloon is the wind made visible.
+    const rp = p.jump || { lat, lon };
+    s.r = llToR(rp.lat, rp.lon, p.jExitAlt);
+    s.lat0 = rp.lat; s.lon0 = rp.lon;
+    const en = enuAt(s.r);
+    const w0 = windAt(p.jExitAlt);
+    s.v = V3.add(V3.scale(en.east, w0.u), V3.scale(en.north, w0.v));
+    s.cdaJ = 1; s.deployT = null;
+    s.errE = 0; s.errN = 0; s.pred = null; s.pred0 = null; s.predMiss = null;
+    s.predT = -1; s._predWall = 0;
+    s.log = []; s.mach1 = null; s.sub1 = null; s.lvl12 = null; s.pkT = null;
+    s.vMax = 0; s.vMaxAlt = 0;
+    // the forecast-error field this jump falls through: four random phases,
+    // fixed at exit, so the "actual" air is consistent within one jump and
+    // different between jumps
+    s.gseed = [0, 0, 0, 0].map(() => Math.random()*Math.PI*2);
   } else if (p.ptype === "balloon") {
     // helium mass fixed at fill: ideal gas at launch-site ISA conditions
     // (ambient pressure assumed inside the envelope; the ~1 kPa latex
@@ -2919,13 +3046,47 @@ async function doFire() {
     if (!icbmSol || !icbmSol.ok) { setHint("No trajectory solution yet."); return; }
     p.veh = icbmSol.veh; p.aim = icbmSol.aim;
   }
+  if (p.ptype === "jumper") {
+    // the click was the landing mark; solve the exit point for it now, with
+    // the wind profile just awaited above, by flying the descent in advance
+    const tg = { lat: launch.lat, lon: launch.lon, g: g0 };
+    const sol = stratosSolve(tg);
+    if (!sol) { setHint("The descent solver did not converge."); return; }
+    stratosTarget = tg; stratosSol = sol;
+    p.jump = sol.release;
+    globe.clearPoints("spred");
+    // the whole show happens 39 km up: ride the chase camera from the step-off
+    $("followToggle").checked = true;
+  }
+  // the jumper starts at the solved release point 39 km up, not at the pin
+  const sLat = p.jump ? p.jump.lat : launch.lat;
+  const sLon = p.jump ? p.jump.lon : launch.lon;
+  const sAlt = p.ptype === "jumper" ? p.jExitAlt : g0 + p.relH;
   const s = makeState(p, launch.lat, launch.lon, g0, launch.heading, p.angle, false);
+  if (p.ptype === "jumper") {
+    const relD = surfDist(p.jump.lat, p.jump.lon, launch.lat, launch.lon);
+    const relB = compass8(bearingDeg(launch.lat, launch.lon, p.jump.lat, p.jump.lon));
+    s.log.push(`<b>Exit</b> at ${fmtAlt(p.jExitAlt)}, ${fmtDist(relD)} ${relB} of your mark: `
+      + `solved by flying the descent ${stratosSol.trace.length}x on the forecast `
+      + `(${stratosSol.trace.map(t => fmtDist(t.miss)).join(" &rarr; ")}). `
+      + `The real air votes from here.`);
+    // The blind counterfactual, flown now and judged at landing: the same
+    // exit, the SAME air (shared gust seeds), and no steering. The forecast
+    // prediction cannot serve here: it is blind to the gusts too, so it
+    // would only echo the solver's residual and flatter the feedback.
+    const cf = { p: s.p, phase: "jump", t: 0, r: [...s.r], v: [...s.v],
+      preview: false, deployT: null, lat0: s.lat0, lon0: s.lon0,
+      ground0: s.ground0, trackLen: 0, errE: 0, errN: 0, cdaJ: 1, gseed: s.gseed };
+    const bl = jumperFly(cf);
+    s.blindMiss = bl
+      ? surfDist(stratosTarget.lat, stratosTarget.lon, bl.lat, bl.lon) : null;
+  }
   launchEpoch = wallMs;         // the flight advances the clock from here
   sim = s; simStatus = "flying";
   playing = true; stepCarry = 0;
   setPauseUi();
-  trackShadow = [[launch.lat, launch.lon, g0 + GROUND_LIFT]];
-  track3d = [[launch.lat, launch.lon, g0 + p.relH]];
+  trackShadow = [[sLat, sLon, g0 + GROUND_LIFT]];
+  track3d = [[sLat, sLon, sAlt]];
   // seed the APPEND-mode GL trails (they grow segment by segment and are
   // never rebuilt in flight; see globe.appendLine). Clear first: a re-fire
   // without a fresh placement must not append across from the old trail.
@@ -2945,7 +3106,7 @@ async function doFire() {
   wrap.appendChild(dot);
   document.body.appendChild(wrap);
   objMarker = globe.addMarker(wrap);
-  objMarker.setPos(launch.lat, launch.lon, g0);
+  objMarker.setPos(sLat, sLon, g0);
   s.dotEl = dot;
   setHint("Flying. Left click starts a new launch.");
   const ph0 = phaseHtml(s).match(/<b>(.*?)<\/b>/);
@@ -2958,7 +3119,15 @@ function accel(s, r, v) {
   const rn = V3.norm(r), h = rn - R_EARTH;
   const atm = atmAt(h);
   const { east, north, up } = enuAt(r);
-  const w = windAt(h);   // wind blows horizontally in the local frame
+  let w = windAt(h);     // wind blows horizontally in the local frame
+  if (p.ptype === "jumper" && !s.preview) {
+    // the man falls through the atmosphere, not the forecast: his air is the
+    // profile plus a seeded forecast-error field. The solver and the live
+    // predictor (preview states) fly the plain forecast, and the difference
+    // is exactly the precision limit this preset exists to show.
+    const g = jumperGust(s, h);
+    w = { u: w.u + g.u, v: w.v + g.v };
+  }
   const wv = V3.add(V3.scale(east, w.u), V3.scale(north, w.v));
   const vrel = V3.sub(v, wv);
   const rs = V3.norm(vrel);
@@ -3050,6 +3219,41 @@ function accel(s, r, v) {
     F = V3.scale(up, -mEff*gLoc);
     if (p.drag)
       F = V3.add(F, V3.scale(vrel, -0.5*atm.rho*p.bScrapCd*(p.bScrapArea/1e4)*rs));
+  } else if (s.phase === "jump" || s.phase === "canopy") {
+    // A falling man, then a wing. Freefall drag on the suited body's area
+    // (with a slow body-position wander in the real flight only); after the
+    // pull the canopy's area ramps in over four seconds, which is inflation
+    // rather than a step and keeps the opening shock survivable. Steering is
+    // where "he tries to go there" lives, with exactly a real jumper's
+    // authority and no more: subsonic body-tracking redirects a fraction of
+    // the drag force (so in stratospheric air it rounds to nothing however
+    // hard he tries, physics rather than a rule, and above Mach 0.9 the
+    // pressure suit is a rigid capsule), and the canopy flies at jAirspd
+    // toward the error, which in ground terms is wind plus airspeed: a
+    // surface wind stronger than the canopy cannot be penetrated.
+    mEff = p.jMass;
+    let cda = p.jCdA * (s.preview ? 1 : s.cdaJ);
+    if (s.phase === "canopy")
+      cda = p.jCdA + (p.jCanopyCdA - p.jCdA) * Math.min(1, (s.t - (s.deployT ?? s.t))/4);
+    F = V3.scale(up, -mEff*gLoc);
+    if (p.drag && rs > 1e-9) {
+      const dragK = 0.5*atm.rho*cda*rs;          // force per unit velocity
+      F = V3.add(F, V3.scale(vrel, -dragK));
+      const err = Math.hypot(s.errE || 0, s.errN || 0);
+      if (err > 25) {
+        const eDir = V3.unit(V3.add(V3.scale(east, s.errE), V3.scale(north, s.errN)));
+        if (s.phase === "jump" && rs < 0.9*SOUND(atm.T))
+          F = V3.add(F, V3.scale(eDir, p.jTrack * dragK * rs));
+        else if (s.phase === "canopy") {
+          // command an airspeed toward the error, relaxed over ~3 s; brake
+          // to a hover-over-the-mark as the error shrinks
+          const vh = V3.sub(vrel, V3.scale(up, V3.dot(vrel, up)));
+          const cmd = V3.scale(eDir, Math.min(p.jAirspd, err/20));
+          F = V3.add(F, V3.scale(V3.sub(cmd, vh), mEff/3));
+        }
+      }
+    }
+    s._cd = null;      // the HUD's Cd slot expects a coefficient; ours is an area
   } else {   // ball
     mEff = s.m;
     F = V3.scale(up, -mEff*gLoc);
@@ -3122,6 +3326,153 @@ function checkBurst(s) {
     if (!s.preview) {
       $("hudPhase").textContent = "scrap (burst)";
       if (s.dotEl) s.dotEl.style.background = "#a0aec0";
+    }
+  }
+}
+
+/* ---------- the Stratos jumper ---------- */
+// The forecast-error field the real jump falls through. Magnitudes are the
+// rawinsonde-vs-model RMS vector errors the verification literature reports:
+// ~1.5 m/s near the surface, ~4 near the jet, and larger above 12 km, where
+// the forecast has no levels at all and windAt() holds the 200 hPa value
+// flat, so "error" up there is really "no data". Structure is two smooth
+// octaves in altitude, so shear looks like shear rather than noise.
+function jumperGust(s, h) {
+  const g = s.gseed;
+  const amp = h < 1000 ? 1.5 + h/1000
+            : h < 8000 ? 2.5 + (h - 1000)/7000*1.5
+            : h < 14000 ? 4.0
+            : h < 20000 ? 3.2
+            : 5.0;
+  return {
+    u: amp*0.7*(Math.sin(h/1700 + g[0]) + 0.5*Math.sin(h/4300 + g[1])),
+    v: amp*0.7*(Math.sin(h/1500 + g[2]) + 0.5*Math.sin(h/3900 + g[3])),
+  };
+}
+
+// Fly a jumper state to the ground on the plain forecast (the state must be
+// a preview, so no gusts, no drag wander, no steering). Shared by the
+// pre-jump release solver and the in-flight landing predictor: both are the
+// same question, "where does this state end up if nothing intervenes".
+function jumperFly(ps) {
+  const dt = 0.15;
+  for (let i = 0; i < 40000; i++) {
+    rk4(ps, dt);
+    const ll = simLatLon(ps);
+    const g = groundUnder(ps, ll[0], ll[1]);
+    if (ps.phase === "jump" && simAlt(ps) - g <= ps.p.jDeployAgl) {
+      ps.phase = "canopy"; ps.deployT = ps.t;
+    }
+    if (simAlt(ps) <= g && V3.dot(ps.v, V3.unit(ps.r)) < 0)
+      return { lat: ll[0], lon: ll[1], t: ps.t };
+  }
+  return null;
+}
+
+// Where does he land if he stops steering right now? A stripped clone of the
+// live state flown to the ground on the forecast. This is the live feedback:
+// it wanders as the unforecast air acts, and the gap between it and the mark
+// is what his remaining authority has to cover.
+function jumperPredict(s) {
+  const ps = { p: s.p, phase: s.phase, t: s.t, r: [...s.r], v: [...s.v],
+    preview: true, deployT: s.deployT, lat0: s.lat0, lon0: s.lon0,
+    ground0: s.ground0, trackLen: 0, errE: 0, errN: 0, cdaJ: 1 };
+  return jumperFly(ps);
+}
+
+// Solve the exit point for a chosen landing mark: start over the mark, fly
+// the whole descent, move the release by the measured miss, fly it again.
+// The same live-feedback loop as icbmSolve, and for the same reason: the
+// drift is an integral over a forecast profile, so there is no closed form
+// to invert, only descents to fly and misses to measure.
+function stratosSolve(tg) {
+  const p = readParams();
+  let rel = { lat: tg.lat, lon: tg.lon };
+  let best = null;
+  const trace = [];
+  for (let pass = 0; pass < 5; pass++) {
+    const st = makeState({ ...p, jump: rel }, rel.lat, rel.lon, tg.g, 0, 90, true);
+    const r = jumperFly(st);
+    if (!r) return null;
+    const miss = surfDist(tg.lat, tg.lon, r.lat, r.lon);
+    trace.push({ miss, tof: r.t });
+    if (!best || miss < best.miss) best = { rel, ll: r, miss, tof: r.t };
+    if (miss < 40 || pass === 4) break;
+    // move the release the other way by the miss; the drift field is smooth
+    // at these scales, so the plain unit gain converges in two or three
+    const back = (bearingDeg(tg.lat, tg.lon, r.lat, r.lon) + 180) % 360;
+    const [lo2, la2] = destPoint(rel.lat, rel.lon, back, miss);
+    rel = { lat: la2, lon: lo2 };
+  }
+  return { release: best.rel, miss: best.miss, tof: best.tof, trace };
+}
+
+const compass8 = b =>
+  ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round((((b % 360) + 360) % 360)/45) % 8];
+
+// Per-step jumper bookkeeping: the drag wander, the milestone log the bottom
+// panel narrates from, the canopy pull, and the live landing prediction that
+// feeds both the commentary and the steering.
+function checkJumper(s) {
+  if (s.p.ptype !== "jumper" || s.preview) return;
+  const h = simAlt(s);
+  const ll = simLatLon(s);
+  const agl = h - groundUnder(s, ll[0], ll[1]);
+  const spd = V3.norm(s.v);
+  const mach = spd / SOUND(atmAt(h).T);
+  // body position is not a constant: a slow bounded random walk, +-8%
+  s.cdaJ = Math.min(1.08, Math.max(0.92, s.cdaJ + (Math.random() - 0.5)*0.004));
+  if (spd > s.vMax) { s.vMax = spd; s.vMaxAlt = h; }
+  if (!s.mach1 && s.phase === "jump" && mach >= 1) {
+    s.mach1 = { t: s.t, alt: h };
+    s.log.push(`T+${Math.round(s.t)} s &middot; <b>Mach 1</b> at ${fmtAlt(h)}: supersonic with `
+      + `no vehicle. Felix crossed ~34 s in; the danger was the flat spin, not the shock.`);
+  }
+  if (!s.pkT && s.vMax > 250 && spd < 0.93*s.vMax) {
+    s.pkT = s.t;
+    s.log.push(`T+${Math.round(s.t)} s &middot; <b>Peak ${Math.round(s.vMax*3.6).toLocaleString()} km/h</b> `
+      + `at ${fmtAlt(s.vMaxAlt)} (official: 1,357.6, Mach 1.25, near 27.8 km). `
+      + `The thickening air brakes him from here.`);
+  }
+  if (s.mach1 && !s.sub1 && mach < 1) {
+    s.sub1 = s.t;
+    s.log.push(`T+${Math.round(s.t)} s &middot; <b>Subsonic again</b> at ${fmtAlt(h)}: `
+      + `${Math.round(s.t - s.mach1.t)} s supersonic (his: ~30).`);
+  }
+  if (!s.lvl12 && h < 12000) {
+    s.lvl12 = s.t;
+    s.log.push(`T+${Math.round(s.t)} s &middot; <b>Below 12 km</b>: measured wind levels start. `
+      + `Above, the forecast had no data; part of why the spot cannot be exact.`);
+  }
+  if (s.phase === "jump" && agl <= s.p.jDeployAgl) {
+    s.phase = "canopy"; s.deployT = s.t;
+    if (s.dotEl) s.dotEl.style.background = "#d97706";
+    s.log.push(`T+${Math.round(s.t)} s &middot; <b>Main canopy</b> at ${fmtAlt(Math.max(0, agl))} AGL, `
+      + `where Felix pulled (freefall ${fmtClock(s.t)} vs his 4:20; drogue stays packed, as `
+      + `his did). Reach left: ${fmtDist(s.p.jAirspd*agl/5.8)}.`);
+  }
+  // The live prediction: often enough to steer and narrate with, seldom
+  // enough to stay cheap. Two gates: a sim cadence (his perception loop),
+  // and a wall floor so cranked time speed cannot ask for hundreds per
+  // second. The wall floor shrinks as he descends because the remaining
+  // flight, and so the prediction, shrinks with it; a flat floor let the
+  // error estimate go 45 sim-seconds stale at 300x and cost him ~200 m,
+  // which was an artifact of the time speed, not a property of the jump.
+  const wall = performance.now();
+  const cad = agl < 300 ? 0.5 : agl < 4000 ? 1 : 2;
+  const gate = agl < 6000 ? 30 : 120;
+  if (s.t - s.predT >= cad && wall - s._predWall > gate) {
+    s.predT = s.t; s._predWall = wall;
+    const pr = jumperPredict(s);
+    if (pr && stratosTarget) {
+      s.pred = pr;
+      if (!s.pred0) s.pred0 = pr;      // the exit-time passive answer, kept for the verdict
+      s.predMiss = surfDist(stratosTarget.lat, stratosTarget.lon, pr.lat, pr.lon);
+      const b = bearingDeg(pr.lat, pr.lon, stratosTarget.lat, stratosTarget.lon)*Math.PI/180;
+      s.errE = s.predMiss*Math.sin(b);
+      s.errN = s.predMiss*Math.cos(b);
+      const g = terrainAt(pr.lat, pr.lon) ?? stratosTarget.g;
+      globe.setPoints("spred", [pr.lat, pr.lon, g + GROUND_LIFT], [1, 0.72, 0.2, 0.95], 11, 1);
     }
   }
 }
@@ -3619,6 +3970,24 @@ function land(s, ll, ground) {
     `flight time ${ft} &middot; straight-line ${fmtDist(straight)} &middot; ` +
     `track ${fmtDist(s.trackLen)} &middot; impact ${fmtSpeed(impact)}` +
     (s.burstInfo ? `<br>burst at ${fmtAlt(s.burstInfo.alt)} MSL after ${fmtClock(s.burstInfo.t)} (${s.burstInfo.reason})` : "");
+  if (s.p.ptype === "jumper" && stratosTarget) {
+    const miss = surfDist(stratosTarget.lat, stratosTarget.lon, ll[0], ll[1]);
+    const passive = s.blindMiss;
+    $("landTitle").textContent = "Down";
+    $("landStats").innerHTML =
+      `<b>${fmtDist(miss)} from the chosen mark.</b> `
+      + (passive != null
+         ? `Falling blind through the same air, the solved exit alone would have missed `
+           + `by ${fmtDist(passive)}: that gap is the unforecast wind, and steering closed `
+           + `the rest. What remains is the limit: prediction cadence, canopy authority, `
+           + `gusts below the last fix.`
+         : ``)
+      + `<br>peak ${Math.round(s.vMax*3.6).toLocaleString()} km/h at ${fmtAlt(s.vMaxAlt)} `
+      + `(Baumgartner: 1,357.6 near 27.8 km) &middot; freefall ${fmtClock(s.deployT ?? s.t)} `
+      + `(his 4:20) &middot; total ${fmtClock(s.t)} (his ~9 min)`
+      + `<br>drift from exit ${fmtDist(straight)} &middot; track ${fmtDist(s.trackLen)} `
+      + `&middot; touchdown ${fmtSpeed(impact)}`;
+  }
   if (s.p.ptype === "icbm") {
     icbmImpactReport(s, ll);
     // every shot picks its target again: the dialogue comes back with the
@@ -3632,7 +4001,13 @@ function land(s, ll, ground) {
   window.__landing = { t: s.t, straight, trackLen: s.trackLen, impact,
     lat: ll[0], lon: ll[1], burst: s.burstInfo,
     miss: s.p.ptype === "icbm" && icbmSol && icbmSol.target
-      ? surfDist(icbmSol.target.lat, icbmSol.target.lon, ll[0], ll[1]) : null };
+      ? surfDist(icbmSol.target.lat, icbmSol.target.lon, ll[0], ll[1]) : null,
+    missTarget: s.p.ptype === "jumper" && stratosTarget
+      ? surfDist(stratosTarget.lat, stratosTarget.lon, ll[0], ll[1]) : null,
+    passive0: s.p.ptype === "jumper" ? (s.blindMiss ?? null) : null,
+    vMax: s.p.ptype === "jumper" ? s.vMax : null,
+    vMaxAlt: s.p.ptype === "jumper" ? s.vMaxAlt : null,
+    deployT: s.p.ptype === "jumper" ? s.deployT : null };
 }
 
 function declareFloating(s, why) {
@@ -3738,6 +4113,7 @@ function tick(ts) {
   while (n-- > 0) {
     rk4(s, dt);
     checkBurst(s);
+    checkJumper(s);
     ll = simLatLon(s);
     const ground = groundUnder(s, ll[0], ll[1]);
     // strictly descending: a rocket sitting on the pad has zero vertical speed
@@ -4048,6 +4424,10 @@ function applyPreset(name) {
     cam.alt = pr.siteCamAlt ?? 2500;    // Everest's pad needs a high perch
     cam.yaw = 45; cam.pitch = -25;
     camVel[0] = camVel[1] = camVel[2] = 0;
+  } else if (pr.ptype === "jumper") {
+    $("aimNote").textContent = "Click where he should land. The exit point 38,969 m "
+      + "up is solved from the wind, and he flies for your mark all the way down; "
+      + "the amber cross is where he lands if he stops trying.";
   } else if (aimless) {
     $("aimNote").textContent = "Released, not aimed: one click places it and lets go.";
   } else if (pr.orbital) {
@@ -4408,6 +4788,8 @@ $("cityInput").addEventListener("keydown", e => {
 // dialogue opens as soon as the preset is chosen and the launch stays
 // blocked until it is answered. The warhead is optional: it only changes
 // what the map looks like afterwards, and it has a default.
+let stratosTarget = null;       // {lat, lon, g}: the jumper's chosen landing mark
+let stratosSol = null;          // the solved release, kept for the narration
 let icbmTarget = null;          // {lat, lon, name}: committed target
 let icbmPending = null;         // picked in the list, not confirmed yet
 let icbmSol = null;             // the solved mission, or {error}
@@ -5774,6 +6156,10 @@ window.__sim = {
   fireAt: (la, lo) => { launch.heading = bearingDeg(launch.lat, launch.lon, la, lo);
     launchStage = "angle";   // freeze the heading: see ladderAdvance
     return doFire(); },
+  // Stratos hooks: the solve and the live prediction, for the harness
+  get stratosSol() { return stratosSol; },
+  get stratosTarget() { return stratosTarget; },
+  stratosSolve, jumperPredict,
 };
 </script>
 </body>
