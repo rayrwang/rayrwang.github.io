@@ -5587,7 +5587,7 @@ function nukeClose() {
   bar.textContent = exch
     ? `${exch.power.name} exchange running · click to set up another`
     : nukeSel.size
-      ? `${NUKE_POWERS[$("nukeSrc").value].name} vs ${[...nukeSel].join(", ")} · click to change`
+      ? `${(NUKE_BLOCS[$("nukeSrc").value] || NUKE_POWERS[$("nukeSrc").value]).name} vs ${[...nukeSel].join(", ")} · click to change`
       : "No exchange set up · click to choose";
 }
 // The names people actually type. cities.json carries one official name per
